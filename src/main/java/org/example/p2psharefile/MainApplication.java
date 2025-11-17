@@ -21,12 +21,16 @@ public class MainApplication extends Application {
             MainApplication.class.getResource("main-view.fxml")
         );
         
-        Scene scene = new Scene(fxmlLoader.load(), 900, 700);
+        Scene scene = new Scene(fxmlLoader.load(), 1000, 750);
         
-        stage.setTitle("P2P Share File - Ứng dụng chia sẻ file ngang hàng");
+        // Load custom CSS stylesheet
+        String css = MainApplication.class.getResource("styles.css").toExternalForm();
+        scene.getStylesheets().add(css);
+        
+        stage.setTitle("P2P Share File - Modern File Sharing Application");
         stage.setScene(scene);
-        stage.setMinWidth(800);
-        stage.setMinHeight(600);
+        stage.setMinWidth(900);
+        stage.setMinHeight(650);
         
         // Xử lý khi đóng app
         stage.setOnCloseRequest(event -> {

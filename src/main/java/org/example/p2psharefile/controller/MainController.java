@@ -31,6 +31,7 @@ public class MainController implements P2PService.P2PServiceListener {
     // Header
     @FXML private Label peerNameLabel;
     @FXML private Label statusLabel;
+    @FXML private Label statusDot;
     @FXML private Label peerCountLabel;
     
     // Tab 1: Kết nối
@@ -138,7 +139,7 @@ public class MainController implements P2PService.P2PServiceListener {
         searchButton.setDisable(true);
         downloadButton.setDisable(true);
         
-        updateStatus("Chưa kết nối", "red");
+        updateStatus("Offline", "#ff4757");
         
         log("📱 Ứng dụng P2P Share File đã sẵn sàng!");
         log("📁 Thư mục download mặc định: " + downloadDirectory);
@@ -224,7 +225,7 @@ public class MainController implements P2PService.P2PServiceListener {
         currentPINSession = null;
         pinDisplayPanel.setVisible(false);
         
-        updateStatus("Đã ngắt kết nối", "gray");
+        updateStatus("Disconnected", "#95a5a6");
         peerCountLabel.setText("Peers: 0");
         
         log("🛑 Đã dừng P2P Service");
@@ -488,12 +489,17 @@ public class MainController implements P2PService.P2PServiceListener {
     // ========== Helper Methods ==========
     
     /**
-     * Update status label
+     * Update status label with dot indicator
      */
     private void updateStatus(String text, String color) {
         Platform.runLater(() -> {
             statusLabel.setText(text);
-            statusLabel.setStyle("-fx-text-fill: " + color + "; -fx-font-weight: bold;");
+            statusLabel.setStyle("-fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 16;");
+            
+            // Update status dot color
+            if (statusDot != null) {
+                statusDot.setStyle("-fx-text-fill: " + color + "; -fx-font-size: 20;");
+            }
         });
     }
     
@@ -543,7 +549,7 @@ public class MainController implements P2PService.P2PServiceListener {
             if (!peerList.contains(peer)) {
                 peerList.add(peer);
             }
-            peerCountLabel.setText("Peers: " + peerList.size());
+            peerCountLabel.setText(peerList.size() + " Peers");
             log("✓ Phát hiện peer: " + peer.getDisplayName());
         });
     }
@@ -552,7 +558,7 @@ public class MainController implements P2PService.P2PServiceListener {
     public void onPeerLost(PeerInfo peer) {
         Platform.runLater(() -> {
             peerList.remove(peer);
-            peerCountLabel.setText("Peers: " + peerList.size());
+            peerCountLabel.setText(peerList.size() + " Peers");
             log("✗ Mất kết nối: " + peer.getDisplayName());
         });
     }
@@ -607,13 +613,13 @@ public class MainController implements P2PService.P2PServiceListener {
     
     @Override
     public void onServiceStarted() {
-        updateStatus("Đang online", "green");
+        updateStatus("Online", "#00b894");
         log("✅ Service đã khởi động");
     }
     
     @Override
     public void onServiceStopped() {
-        updateStatus("Đã ngắt kết nối", "gray");
+        updateStatus("Disconnected", "#95a5a6");
         log("🛑 Service đã dừng");
     }
 }
