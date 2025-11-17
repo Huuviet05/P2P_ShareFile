@@ -51,7 +51,12 @@ public class FileSearchService {
         searchSocket = new DatagramSocket(null);
         searchSocket.setReuseAddress(true);
         searchSocket.setBroadcast(true);
+        
+        // Bind vào 0.0.0.0 để nhận broadcast
         searchSocket.bind(new InetSocketAddress(SEARCH_UDP_PORT));
+        
+        System.out.println("✓ File Search Service bind vào 0.0.0.0:" + SEARCH_UDP_PORT + " (listening all interfaces)");
+        System.out.println("  → Local Peer IP: " + localPeer.getIpAddress());
         
         executorService = Executors.newCachedThreadPool();
         scheduledExecutor = Executors.newScheduledThreadPool(1);

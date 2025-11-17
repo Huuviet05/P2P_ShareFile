@@ -61,7 +61,13 @@ public class PeerDiscovery {
         socket = new DatagramSocket(null); // null = không bind ngay
         socket.setReuseAddress(true);      // ⭐ Cho phép share port
         socket.setBroadcast(true);
+        
+        // QUAN TRỌNG: Bind vào 0.0.0.0 (tất cả interface) để nhận broadcast
+        // Nếu bind vào IP cụ thể sẽ KHÔNG nhận được broadcast!
         socket.bind(new InetSocketAddress(DISCOVERY_PORT));
+        
+        System.out.println("✓ Peer Discovery bind vào 0.0.0.0:" + DISCOVERY_PORT + " (listening all interfaces)");
+        System.out.println("  → Local Peer IP: " + localPeer.getIpAddress());
         
         executorService = Executors.newFixedThreadPool(3);
         
@@ -100,20 +106,38 @@ public class PeerDiscovery {
     private void listenForPeers() {
         byte[] buffer = new byte[1024];
         
+        System.out.println("👂 Bắt đầu lắng nghe broadcast trên port " + DISCOVERY_PORT);
+        
         while (running) {
             try {
                 DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
                 socket.receive(packet); // Block và chờ packet
+                
+                String senderIP = packet.getAddress().getHostAddress();
+                System.out.println("📥 Nhận broadcast từ: " + senderIP + ":" + packet.getPort() + 
+                                 " (" + packet.getLength() + " bytes)");
                 
                 // Deserialize peer info từ packet
                 ByteArrayInputStream bais = new ByteArrayInputStream(packet.getData());
                 ObjectInputStream ois = new ObjectInputStream(bais);
                 PeerInfo receivedPeer = (PeerInfo) ois.readObject();
                 
-                // Không thêm chính mình vào danh sách
-                if (!receivedPeer.getPeerId().equals(localPeer.getPeerId())) {
-                    handleDiscoveredPeer(receivedPeer);
+                System.out.println("   → Peer: " + receivedPeer.getDisplayName() + " (" + receivedPeer.getIpAddress() + ")");
+                
+                // FILTER 1: Không thêm chính mình vào danh sách
+                if (receivedPeer.getPeerId().equals(localPeer.getPeerId())) {
+                    System.out.println("   ⏭ Bỏ qua broadcast từ chính mình (same PeerID)");
+                    continue;
                 }
+                
+                // FILTER 2: Chỉ chấp nhận peer từ cùng subnet (10.50.x.x hoặc 192.168.x.x)
+                if (!isSameSubnet(localPeer.getIpAddress(), receivedPeer.getIpAddress())) {
+                    System.out.println("   ⏭ Bỏ qua peer từ subnet khác: " + receivedPeer.getIpAddress());
+                    continue;
+                }
+                
+                System.out.println("   ✓ Peer hợp lệ từ cùng subnet: " + receivedPeer.getDisplayName());
+                handleDiscoveredPeer(receivedPeer);
                 
             } catch (SocketException e) {
                 // Socket đã đóng, thoát loop
@@ -147,13 +171,16 @@ public class PeerDiscovery {
                 );
                 
                 socket.send(packet);
+                System.out.println("📡 Broadcast heartbeat: " + localPeer.getDisplayName() + 
+                                 " (" + localPeer.getIpAddress() + ") - " + data.length + " bytes");
                 
                 // Chờ HEARTBEAT_INTERVAL trước khi gửi lại
                 Thread.sleep(HEARTBEAT_INTERVAL);
                 
             } catch (Exception e) {
                 if (running) {
-                    System.err.println("Lỗi khi broadcast heartbeat: " + e.getMessage());
+                    System.err.println("❌ Lỗi khi broadcast heartbeat: " + e.getMessage());
+                    e.printStackTrace();
                 }
             }
         }
@@ -264,5 +291,36 @@ public class PeerDiscovery {
      */
     public PeerInfo getPeerById(String peerId) {
         return discoveredPeers.get(peerId);
+    }
+    
+    /**
+     * Kiểm tra 2 IP có cùng subnet không (so sánh 3 octet đầu của class C)
+     * Ví dụ: 10.50.61.204 và 10.50.61.252 → cùng subnet
+     *        10.50.61.204 và 192.168.56.1 → khác subnet
+     */
+    private boolean isSameSubnet(String ip1, String ip2) {
+        try {
+            String[] parts1 = ip1.split("\\.");
+            String[] parts2 = ip2.split("\\.");
+            
+            if (parts1.length != 4 || parts2.length != 4) {
+                return false;
+            }
+            
+            // So sánh 3 octet đầu (Class C subnet /24)
+            // Hoặc 2 octet đầu cho Class B (/16)
+            boolean classC = parts1[0].equals(parts2[0]) && 
+                           parts1[1].equals(parts2[1]) && 
+                           parts1[2].equals(parts2[2]);
+            
+            boolean classB = parts1[0].equals(parts2[0]) && 
+                           parts1[1].equals(parts2[1]);
+            
+            return classC || classB;
+            
+        } catch (Exception e) {
+            System.err.println("❌ Lỗi so sánh subnet: " + e.getMessage());
+            return false;
+        }
     }
 }
