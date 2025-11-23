@@ -569,6 +569,12 @@ public class MainController implements P2PService.P2PServiceListener {
             for (FileInfo file : response.getFoundFiles()) {
                 searchResults.add(new SearchResultItem(file, response.getSourcePeer()));
             }
+            
+            // Enable download button ngay khi có kết quả đầu tiên
+            if (!searchResults.isEmpty()) {
+                downloadButton.setDisable(false);
+            }
+            
             log("📦 Tìm thấy " + response.getFoundFiles().size() + 
                 " file từ " + response.getSourcePeer().getDisplayName());
         });

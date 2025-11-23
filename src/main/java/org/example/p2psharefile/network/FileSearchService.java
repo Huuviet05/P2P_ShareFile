@@ -15,7 +15,7 @@ import java.util.concurrent.*;
 public class FileSearchService {
     
     private static final int SEARCH_UDP_PORT = 8891;
-    private static final int SEARCH_TIMEOUT = 10000;
+    private static final int SEARCH_TIMEOUT = 5000;
     
     private final PeerInfo localPeer;
     private final PeerDiscovery peerDiscovery;
