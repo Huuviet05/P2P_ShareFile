@@ -117,11 +117,19 @@ public class PeerDiscovery {
                 System.out.println("📥 Nhận broadcast từ: " + senderIP + ":" + packet.getPort() + 
                                  " (" + packet.getLength() + " bytes)");
                 
-                // Deserialize peer info từ packet
-                ByteArrayInputStream bais = new ByteArrayInputStream(packet.getData());
+                // Deserialize peer info từ packet (chỉ đọc tới độ dài thật của gói tin)
+                ByteArrayInputStream bais = new ByteArrayInputStream(packet.getData(), 0, packet.getLength());
                 ObjectInputStream ois = new ObjectInputStream(bais);
                 PeerInfo receivedPeer = (PeerInfo) ois.readObject();
-                
+
+                // Dùng IP thực tế lấy từ header UDP để tránh trường hợp peer broadcast với IP 127.0.0.1
+                // (ví dụ máy chọn sai interface). Điều này giúp peer cũ nhận đúng IP của peer mới.
+                if (!senderIP.equals(receivedPeer.getIpAddress())) {
+                    System.out.println("   ⚠ IP thực tế " + senderIP + " khác IP khai báo " + receivedPeer.getIpAddress() +
+                                       ", dùng IP thực tế để kết nối");
+                    receivedPeer.setIpAddress(senderIP);
+                }
+
                 System.out.println("   → Peer: " + receivedPeer.getDisplayName() + " (" + receivedPeer.getIpAddress() + ")");
                 
                 // FILTER 1: Không thêm chính mình vào danh sách
