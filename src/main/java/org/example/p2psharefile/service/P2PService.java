@@ -184,13 +184,25 @@ public class P2PService {
 
         // Khởi động các service theo thứ tự
         try {
-            peerDiscovery.start();
+            // Start peer discovery NHƯNG CHƯA GỬI JOIN
+            peerDiscovery.start(false);  // ← false = không gửi JOIN ngay
+            
             fileSearchService.start();
-            fileTransferService.start();
+            fileTransferService.start();  // ← Port được set tại đây!
             // pinCodeService.start();  // ← TẠM THỜI VÔ HIỆU HÓA (conflict port 8887)
 
             running = true;
+            
             System.out.println("✅ P2P Service đã khởi động thành công!");
+            System.out.println("📌 Final Peer Info:");
+            System.out.println("   - Display Name: " + localPeer.getDisplayName());
+            System.out.println("   - IP Address: " + localPeer.getIpAddress());
+            System.out.println("   - TCP Port: " + localPeer.getPort());
+            System.out.println("   - Peer ID: " + localPeer.getPeerId());
+            
+            // ⭐⭐⭐ BÂY GIỜ MỚI GỬI JOIN (sau khi port đã được set)
+            peerDiscovery.sendJoinAnnouncement();
+            
             notifyServiceStarted();
 
         } catch (IOException e) {
