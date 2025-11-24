@@ -176,37 +176,50 @@ public class P2PService {
             return;
         }
 
-        System.out.println("🚀 Đang khởi động P2P Service...");
+        System.out.println("🚀 ========== KHỞI ĐỘNG P2P SERVICE ==========");
         System.out.println("   Peer ID: " + localPeer.getPeerId());
         System.out.println("   Display Name: " + localPeer.getDisplayName());
         System.out.println("   IP Address: " + localPeer.getIpAddress());
-        System.out.println("   TCP Port: " + localPeer.getPort());
+        System.out.println("   TCP Port Request: " + localPeer.getPort() + " (will auto-assign)");
 
-        // Khởi động các service theo thứ tự
         try {
-            // Start peer discovery NHƯNG CHƯA GỬI JOIN
-            peerDiscovery.start(false);  // ← false = không gửi JOIN ngay
-            
+            // ⭐ BƯỚC 1: Start FileTransferService TRƯỚC để lấy port thực
+            System.out.println("\n[1/4] Khởi động FileTransferService...");
+            fileTransferService.start();
+
+            // Port giờ đã được set bởi FileTransferService
+            int actualPort = localPeer.getPort();
+            System.out.println("✓ FileTransferService started on port: " + actualPort);
+
+            // ⭐ BƯỚC 2: Start FileSearchService
+            System.out.println("\n[2/4] Khởi động FileSearchService...");
             fileSearchService.start();
-            fileTransferService.start();  // ← Port được set tại đây!
-            // pinCodeService.start();  // ← TẠM THỜI VÔ HIỆU HÓA (conflict port 8887)
+            System.out.println("✓ FileSearchService started");
+
+            // ⭐ BƯỚC 3: Start PeerDiscovery NHƯNG CHƯA GỬI JOIN
+            System.out.println("\n[3/4] Khởi động PeerDiscovery (không gửi JOIN)...");
+            peerDiscovery.start(false);  // ← false = không gửi JOIN ngay
+            System.out.println("✓ PeerDiscovery started (listening mode)");
+
+            // ⭐ BƯỚC 4: GIỜ MỚI GỬI JOIN (sau khi TẤT CẢ đã sẵn sàng)
+            System.out.println("\n[4/4] Gửi JOIN announcement...");
+            peerDiscovery.sendJoinAnnouncement();
 
             running = true;
-            
-            System.out.println("✅ P2P Service đã khởi động thành công!");
+
+            System.out.println("\n✅ ========== P2P SERVICE READY ==========");
             System.out.println("📌 Final Peer Info:");
             System.out.println("   - Display Name: " + localPeer.getDisplayName());
             System.out.println("   - IP Address: " + localPeer.getIpAddress());
             System.out.println("   - TCP Port: " + localPeer.getPort());
             System.out.println("   - Peer ID: " + localPeer.getPeerId());
-            
-            // ⭐⭐⭐ BÂY GIỜ MỚI GỬI JOIN (sau khi port đã được set)
-            peerDiscovery.sendJoinAnnouncement();
-            
+            System.out.println("===========================================\n");
+
             notifyServiceStarted();
 
         } catch (IOException e) {
             System.err.println("❌ Lỗi khi khởi động P2P Service: " + e.getMessage());
+            e.printStackTrace();
             stop(); // Dừng các service đã khởi động
             throw e;
         }
