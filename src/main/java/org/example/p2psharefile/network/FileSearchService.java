@@ -8,32 +8,33 @@ import java.util.*;
 import java.util.concurrent.*;
 
 /**
- * FileSearchService - Tìm kiếm file qua UDP broadcast (ĐƠN GIẢN HÓA)
- * 
- * Thay vì dùng TCP riêng, gửi search qua UDP broadcast
+ * FileSearchService - Tìm kiếm file qua TCP socket
+ *
+ * Thay vì UDP broadcast, dùng TCP để gửi search request trực tiếp đến các peer
  */
 public class FileSearchService {
-    
-    private static final int SEARCH_UDP_PORT = 8891;
+
+    private static final int SEARCH_PORT = 8891;
     private static final int SEARCH_TIMEOUT = 5000;
-    
+    private static final int CONNECTION_TIMEOUT = 2000;
+
     private final PeerInfo localPeer;
     private final PeerDiscovery peerDiscovery;
     private final Map<String, List<FileInfo>> sharedFiles;
     private final Set<String> processedRequests;
-    
-    private DatagramSocket searchSocket;
+
+    private ServerSocket searchServer;
     private ExecutorService executorService;
     private ScheduledExecutorService scheduledExecutor;
     private volatile boolean running = false;
-    
+
     private final Map<String, SearchResultCallback> activeSearches;
-    
+
     public interface SearchResultCallback {
         void onSearchResult(SearchResponse response);
         void onSearchComplete();
     }
-    
+
     public FileSearchService(PeerInfo localPeer, PeerDiscovery peerDiscovery) {
         this.localPeer = localPeer;
         this.peerDiscovery = peerDiscovery;
@@ -41,35 +42,39 @@ public class FileSearchService {
         this.processedRequests = Collections.newSetFromMap(new ConcurrentHashMap<>());
         this.activeSearches = new ConcurrentHashMap<>();
     }
-    
+
     public void start() throws IOException {
         if (running) return;
-        
+
         running = true;
-        
-        // UDP socket với SO_REUSEADDR
-        searchSocket = new DatagramSocket(null);
-        searchSocket.setReuseAddress(true);
-        searchSocket.setBroadcast(true);
-        
-        // Bind vào 0.0.0.0 để nhận broadcast
-        searchSocket.bind(new InetSocketAddress(SEARCH_UDP_PORT));
-        
-        System.out.println("✓ File Search Service bind vào 0.0.0.0:" + SEARCH_UDP_PORT + " (listening all interfaces)");
+
+        // TCP ServerSocket để nhận search request
+        searchServer = new ServerSocket(SEARCH_PORT);
+        searchServer.setReuseAddress(true);
+
+        System.out.println("✓ File Search Service đã khởi động trên port " + SEARCH_PORT);
         System.out.println("  → Local Peer IP: " + localPeer.getIpAddress());
-        
+
         executorService = Executors.newCachedThreadPool();
         scheduledExecutor = Executors.newScheduledThreadPool(1);
-        executorService.submit(this::listenForMessages);
-        
-        System.out.println("✓ File Search Service (UDP) đã khởi động trên port " + SEARCH_UDP_PORT);
+
+        // Thread lắng nghe search request
+        executorService.submit(this::acceptSearchRequests);
+
+        System.out.println("✓ File Search Service (TCP) đã sẵn sàng");
     }
-    
+
     public void stop() {
         running = false;
-        if (searchSocket != null && !searchSocket.isClosed()) {
-            searchSocket.close();
+
+        try {
+            if (searchServer != null && !searchServer.isClosed()) {
+                searchServer.close();
+            }
+        } catch (IOException e) {
+            System.err.println("Lỗi đóng search server: " + e.getMessage());
         }
+
         if (executorService != null) {
             executorService.shutdownNow();
         }
@@ -77,193 +82,221 @@ public class FileSearchService {
             scheduledExecutor.shutdownNow();
         }
     }
-    
+
     /**
-     * Lắng nghe UDP messages
+     * Lắng nghe search request qua TCP
      */
-    private void listenForMessages() {
-        byte[] buffer = new byte[65536];
-        
+    private void acceptSearchRequests() {
+        System.out.println("👂 Đang lắng nghe search request trên port " + SEARCH_PORT);
+
         while (running) {
             try {
-                DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-                searchSocket.receive(packet);
-                
-                ByteArrayInputStream bais = new ByteArrayInputStream(packet.getData(), 0, packet.getLength());
-                ObjectInputStream ois = new ObjectInputStream(bais);
-                Object message = ois.readObject();
-                
-                if (message instanceof SearchRequest) {
-                    handleSearchRequest((SearchRequest) message, packet.getAddress());
-                } else if (message instanceof SearchResponse) {
-                    handleSearchResponse((SearchResponse) message);
-                }
-                
+                Socket clientSocket = searchServer.accept();
+                clientSocket.setSoTimeout(5000);
+
+                // Xử lý request trong thread riêng
+                executorService.submit(() -> handleSearchConnection(clientSocket));
+
             } catch (SocketException e) {
-                if (running) System.err.println("Socket error: " + e.getMessage());
-            } catch (Exception e) {
-                System.err.println("Lỗi nhận message: " + e.getMessage());
+                if (running) {
+                    System.err.println("Socket error: " + e.getMessage());
+                }
+                break;
+            } catch (IOException e) {
+                if (running) {
+                    System.err.println("Lỗi accept search connection: " + e.getMessage());
+                }
             }
         }
     }
-    
+
     /**
-     * Xử lý search request
+     * Xử lý kết nối search
      */
-    private void handleSearchRequest(SearchRequest request, InetAddress senderAddress) {
-        // **FIX 2**: Bỏ qua request từ chính mình
-        if (request.getOriginPeerId().equals(localPeer.getPeerId())) {
-            System.out.println("⏭ Bỏ qua search request từ chính mình");
-            return;
+    private void handleSearchConnection(Socket socket) {
+        try {
+            ObjectInputStream ois = new ObjectInputStream(socket.getInputStream());
+            ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
+
+            // Nhận message
+            Object message = ois.readObject();
+
+            if (message instanceof SearchRequest) {
+                SearchRequest request = (SearchRequest) message;
+
+                // Bỏ qua request từ chính mình
+                if (request.getOriginPeerId().equals(localPeer.getPeerId())) {
+                    socket.close();
+                    return;
+                }
+
+                // Xử lý search request
+                SearchResponse response = processSearchRequest(request);
+
+                // Gửi response
+                oos.writeObject(response);
+                oos.flush();
+            }
+
+            socket.close();
+
+        } catch (Exception e) {
+            if (running) {
+                System.err.println("Lỗi xử lý search connection: " + e.getMessage());
+            }
         }
-        
+    }
+
+    /**
+     * Xử lý search request và trả về response
+     */
+    private SearchResponse processSearchRequest(SearchRequest request) {
         // Tránh xử lý trùng
         if (processedRequests.contains(request.getRequestId())) {
             System.out.println("⚠ Request đã xử lý rồi: " + request.getRequestId());
-            return;
+            return new SearchResponse(request.getRequestId(), localPeer, new ArrayList<>());
         }
         processedRequests.add(request.getRequestId());
-        
-        System.out.println("🔍 Nhận search request: \"" + request.getSearchQuery() + "\" từ " + senderAddress);
+
+        System.out.println("🔍 Nhận search request: \"" + request.getSearchQuery() + "\"");
         System.out.println("  → Số file đang chia sẻ: " + getSharedFileCount());
-        
+
         // Tìm file local
         List<FileInfo> foundFiles = new ArrayList<>();
         String query = request.getSearchQuery().toLowerCase();
-        
+
         for (Map.Entry<String, List<FileInfo>> entry : sharedFiles.entrySet()) {
             System.out.println("  → Kiểm tra thư mục: " + entry.getKey() + " (" + entry.getValue().size() + " files)");
             for (FileInfo file : entry.getValue()) {
-                System.out.println("    - File: " + file.getFileName());
                 if (file.getFileName().toLowerCase().contains(query)) {
                     foundFiles.add(file);
-                    System.out.println("      ✓ KHỚP!");
+                    System.out.println("    ✓ KHỚP: " + file.getFileName());
                 }
             }
         }
-        
-        // Nếu tìm thấy, gửi response về (broadcast để chắc chắn nhận được)
+
         if (!foundFiles.isEmpty()) {
-            SearchResponse response = new SearchResponse(request.getRequestId(), localPeer, foundFiles);
-            broadcastSearchResponse(response);
-            System.out.println("📦 Tìm thấy " + foundFiles.size() + " file, broadcast response");
+            System.out.println("📦 Tìm thấy " + foundFiles.size() + " file");
         } else {
             System.out.println("⚠ Không tìm thấy file nào khớp với: \"" + query + "\"");
         }
+
+        return new SearchResponse(request.getRequestId(), localPeer, foundFiles);
     }
-    
+
     /**
-     * Xử lý search response
-     */
-    private void handleSearchResponse(SearchResponse response) {
-        // Chỉ xử lý nếu đây là response cho request của mình
-        SearchResultCallback callback = activeSearches.get(response.getRequestId());
-        if (callback != null) {
-            System.out.println("📥 Nhận response: " + response.getFoundFiles().size() + " files từ " + 
-                             response.getSourcePeer().getDisplayName());
-            callback.onSearchResult(response);
-        }
-        // Nếu không có callback, nghĩa là response này không phải cho mình → bỏ qua
-    }
-    
-    /**
-     * Tìm kiếm file
+     * Tìm kiếm file từ các peer
      */
     public void searchFile(String query, SearchResultCallback callback) {
         String requestId = UUID.randomUUID().toString();
         SearchRequest request = new SearchRequest(requestId, localPeer.getPeerId(), query, 5);
-        
+
         activeSearches.put(requestId, callback);
-        
-        // **KHÔNG TÌM LOCAL** - Chỉ tìm từ peer khác
-        // Vì peer đã có file rồi, không cần tìm để tải về
-        System.out.println("🔍 Bắt đầu tìm kiếm từ các peer khác: \"" + query + "\"");
-        
-        // Broadcast request để tìm từ peer khác
-        broadcastSearchRequest(request);
-        
+
+        System.out.println("🔍 Bắt đầu tìm kiếm: \"" + query + "\"");
+
+        // Lấy danh sách peer
+        List<PeerInfo> peers = peerDiscovery.getDiscoveredPeers();
+
+        if (peers.isEmpty()) {
+            System.out.println("⚠ Không có peer nào để tìm kiếm");
+            callback.onSearchComplete();
+            activeSearches.remove(requestId);
+            return;
+        }
+
+        System.out.println("📡 Gửi search request đến " + peers.size() + " peer(s)");
+
+        // Gửi search request đến từng peer
+        CountDownLatch latch = new CountDownLatch(peers.size());
+
+        for (PeerInfo peer : peers) {
+            executorService.submit(() -> {
+                try {
+                    sendSearchRequest(peer, request, callback);
+                } finally {
+                    latch.countDown();
+                }
+            });
+        }
+
         // Timeout sau SEARCH_TIMEOUT
         scheduledExecutor.schedule(() -> {
+            try {
+                // Đợi tất cả peer phản hồi hoặc timeout
+                latch.await(SEARCH_TIMEOUT, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                // Ignore
+            }
+
             activeSearches.remove(requestId);
             callback.onSearchComplete();
+
         }, SEARCH_TIMEOUT, TimeUnit.MILLISECONDS);
     }
-    
+
     /**
-     * Broadcast search request qua UDP
+     * Gửi search request đến một peer
      */
-    private void broadcastSearchRequest(SearchRequest request) {
+    private void sendSearchRequest(PeerInfo peer, SearchRequest request, SearchResultCallback callback) {
+        Socket socket = null;
         try {
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            ObjectOutputStream oos = new ObjectOutputStream(baos);
+            // Kết nối đến peer
+            socket = new Socket();
+            socket.connect(new InetSocketAddress(peer.getIpAddress(), SEARCH_PORT), CONNECTION_TIMEOUT);
+            socket.setSoTimeout(5000);
+
+            // Gửi request
+            ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
             oos.writeObject(request);
             oos.flush();
-            
-            byte[] data = baos.toByteArray();
-            DatagramPacket packet = new DatagramPacket(
-                data, 
-                data.length,
-                InetAddress.getByName("255.255.255.255"),
-                SEARCH_UDP_PORT
-            );
-            
-            searchSocket.send(packet);
-            System.out.println("📡 Broadcast search request: \"" + request.getSearchQuery() + "\" (" + data.length + " bytes)");
-            
-        } catch (IOException e) {
-            System.err.println("❌ Lỗi broadcast search: " + e.getMessage());
-            e.printStackTrace();
+
+            // Nhận response
+            ObjectInputStream ois = new ObjectInputStream(socket.getInputStream());
+            SearchResponse response = (SearchResponse) ois.readObject();
+
+            // Xử lý response
+            if (!response.getFoundFiles().isEmpty()) {
+                System.out.println("📥 Nhận response: " + response.getFoundFiles().size() +
+                        " files từ " + peer.getDisplayName());
+                callback.onSearchResult(response);
+            }
+
+        } catch (IOException | ClassNotFoundException e) {
+            System.err.println("⚠ Không thể kết nối đến peer " + peer.getDisplayName() +
+                    ": " + e.getMessage());
+        } finally {
+            if (socket != null) {
+                try {
+                    socket.close();
+                } catch (IOException e) {
+                    // Ignore
+                }
+            }
         }
     }
-    
-    /**
-     * Broadcast search response qua UDP (thay vì unicast)
-     */
-    private void broadcastSearchResponse(SearchResponse response) {
-        try {
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            ObjectOutputStream oos = new ObjectOutputStream(baos);
-            oos.writeObject(response);
-            oos.flush();
-            
-            byte[] data = baos.toByteArray();
-            DatagramPacket packet = new DatagramPacket(
-                data, 
-                data.length,
-                InetAddress.getByName("255.255.255.255"),
-                SEARCH_UDP_PORT
-            );
-            
-            searchSocket.send(packet);
-            System.out.println("📡 Broadcast search response với " + response.getFoundFiles().size() + " files");
-            
-        } catch (IOException e) {
-            System.err.println("❌ Lỗi broadcast response: " + e.getMessage());
-            e.printStackTrace();
-        }
-    }
-    
+
     /**
      * Thêm file chia sẻ
      */
     public void addSharedFile(String directory, FileInfo fileInfo) {
         sharedFiles.computeIfAbsent(directory, k -> new CopyOnWriteArrayList<>()).add(fileInfo);
-        System.out.println("✓ [FileSearchService] Đã thêm file: " + fileInfo.getFileName() + 
-                           " vào thư mục: " + directory);
+        System.out.println("✓ [FileSearchService] Đã thêm file: " + fileInfo.getFileName() +
+                " vào thư mục: " + directory);
         System.out.println("  → Tổng số file đang chia sẻ: " + getSharedFileCount());
     }
-    
+
     public void removeSharedFile(String directory, String fileName) {
         List<FileInfo> files = sharedFiles.get(directory);
         if (files != null) {
             files.removeIf(f -> f.getFileName().equals(fileName));
         }
     }
-    
+
     public Map<String, List<FileInfo>> getSharedFiles() {
         return new HashMap<>(sharedFiles);
     }
-    
+
     /**
      * Lấy tất cả file đang chia sẻ (flatten)
      */
@@ -274,7 +307,7 @@ public class FileSearchService {
         }
         return allFiles;
     }
-    
+
     /**
      * Đếm số lượng file đang chia sẻ
      */

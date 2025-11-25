@@ -8,21 +8,28 @@ import java.util.*;
 import java.util.concurrent.*;
 
 /**
- * Module 4: PeerDiscovery - Tự động phát hiện các peer trong mạng LAN bằng UDP
+ * PeerDiscovery với TCP Socket - Phát hiện peer qua kết nối trực tiếp
  *
- * FIX: Tách riêng start() và sendJoinAnnouncement() để tránh race condition
+ * Cơ chế hoạt động:
+ * 1. Mỗi peer mở ServerSocket để lắng nghe kết nối
+ * 2. Peer quét dải IP trong subnet để tìm peer khác
+ * 3. Khi tìm thấy peer, thiết lập kết nối TCP và trao đổi thông tin
+ * 4. Duy trì kết nối với heartbeat để kiểm tra peer còn online
  */
 public class PeerDiscovery {
 
     private static final int DISCOVERY_PORT = 8888;
-    private static final int HEARTBEAT_INTERVAL = 5000;
-    private static final int PEER_TIMEOUT = 15000;
+    private static final int HEARTBEAT_INTERVAL = 5000; // 5 giây
+    private static final int PEER_TIMEOUT = 15000; // 15 giây
+    private static final int SCAN_INTERVAL = 10000; // 10 giây quét lại
+    private static final int CONNECTION_TIMEOUT = 2000; // 2 giây timeout kết nối
 
     private final PeerInfo localPeer;
     private final Map<String, PeerInfo> discoveredPeers;
+    private final Map<String, Socket> peerConnections; // Kết nối TCP với peer
     private final List<PeerDiscoveryListener> listeners;
 
-    private DatagramSocket socket;
+    private ServerSocket serverSocket;
     private ExecutorService executorService;
     private volatile boolean running = false;
 
@@ -34,79 +41,62 @@ public class PeerDiscovery {
     public PeerDiscovery(PeerInfo localPeer) {
         this.localPeer = localPeer;
         this.discoveredPeers = new ConcurrentHashMap<>();
+        this.peerConnections = new ConcurrentHashMap<>();
         this.listeners = new CopyOnWriteArrayList<>();
     }
 
     /**
-     * ⭐ FIX: start() CHỈ khởi động socket và threads, KHÔNG gửi JOIN
-     * JOIN sẽ được gửi sau khi TẤT CẢ services đã sẵn sàng
+     * Khởi động dịch vụ discovery
      */
-    public void start(boolean sendJoinImmediately) throws IOException {
+    public void start(boolean scanImmediately) throws IOException {
         if (running) return;
 
         running = true;
 
-        // Tạo UDP socket với SO_REUSEADDR
-        socket = new DatagramSocket(null);
-        socket.setReuseAddress(true);
-        socket.setBroadcast(true);
-        socket.bind(new InetSocketAddress(DISCOVERY_PORT));
+        // Tạo ServerSocket để lắng nghe kết nối từ peer khác
+        serverSocket = new ServerSocket(DISCOVERY_PORT);
+        serverSocket.setReuseAddress(true);
 
-        System.out.println("✓ Peer Discovery bind vào 0.0.0.0:" + DISCOVERY_PORT);
-        System.out.println("  → Local Peer: " + localPeer.getDisplayName() + " (" + localPeer.getIpAddress() + ":" + localPeer.getPort() + ")");
+        System.out.println("✓ Peer Discovery TCP đã khởi động trên port " + DISCOVERY_PORT);
+        System.out.println("  → Local Peer: " + localPeer.getDisplayName() +
+                " (" + localPeer.getIpAddress() + ":" + localPeer.getPort() + ")");
 
-        executorService = Executors.newFixedThreadPool(3);
+        executorService = Executors.newCachedThreadPool();
 
-        // Thread 1: Lắng nghe broadcast
-        executorService.submit(this::listenForPeers);
+        // Thread 1: Lắng nghe kết nối từ peer khác
+        executorService.submit(this::acceptPeerConnections);
 
-        // Thread 2: Heartbeat (CHỜ 2 giây trước khi bắt đầu để JOIN được gửi trước)
-        executorService.submit(() -> {
-            try {
-                Thread.sleep(2000); // Đợi JOIN được gửi trước
-            } catch (InterruptedException e) {
-                return;
-            }
-            broadcastHeartbeat();
-        });
+        // Thread 2: Quét mạng tìm peer
+        if (scanImmediately) {
+            executorService.submit(this::scanNetwork);
+        }
 
-        // Thread 3: Kiểm tra timeout
-        executorService.submit(this::checkPeerTimeout);
+        // Thread 3: Heartbeat và kiểm tra timeout
+        executorService.submit(this::heartbeatAndTimeoutChecker);
 
-        System.out.println("✓ Peer Discovery đã khởi động (chưa gửi JOIN)");
+        System.out.println("✓ Peer Discovery đã sẵn sàng");
     }
 
     /**
-     * ⭐ FIX: Gửi JOIN announcement SAU KHI tất cả services đã start
-     * Phải gọi method này CUỐI CÙNG sau khi FileSearchService và FileTransferService đã sẵn sàng
+     * Gửi announcement sau khi tất cả service đã sẵn sàng
      */
     public void sendJoinAnnouncement() {
         executorService.submit(() -> {
             try {
-                // Chờ 500ms để chắc chắn tất cả services đã bind port
-                Thread.sleep(500);
+                Thread.sleep(500); // Đợi services sẵn sàng
 
-                System.out.println("\n🚀 ========== GỬI JOIN ANNOUNCEMENT ==========");
+                System.out.println("\n🚀 ========== BẮT ĐẦU QUÉT MẠNG ==========");
                 System.out.println("   Peer: " + localPeer.getDisplayName());
                 System.out.println("   IP: " + localPeer.getIpAddress());
                 System.out.println("   Port: " + localPeer.getPort());
 
-                // ⭐ GỬI 3 LẦN với delay để đảm bảo peer khác nhận được
-                for (int i = 1; i <= 3; i++) {
-                    sendBroadcast("join-" + i);
-                    System.out.println("📢 Gửi JOIN lần " + i + "/3");
+                scanNetwork();
 
-                    if (i < 3) {
-                        Thread.sleep(1000); // Delay 1 giây giữa các lần
-                    }
-                }
-
-                System.out.println("✅ Đã gửi xong JOIN announcement");
-                System.out.println("==============================================\n");
+                System.out.println("✅ Đã hoàn thành quét mạng");
+                System.out.println("==========================================\n");
 
             } catch (Exception e) {
-                System.err.println("❌ Lỗi gửi JOIN: " + e.getMessage());
-                e.printStackTrace();
+                System.err.println("❌ Lỗi quét mạng: " + e.getMessage());
             }
         });
     }
@@ -114,16 +104,23 @@ public class PeerDiscovery {
     public void stop() {
         running = false;
 
-        // Gửi LEAVE announcement
-        try {
-            System.out.println("👋 Gửi LEAVE announcement...");
-            sendBroadcast("leave");
-        } catch (Exception e) {
-            System.err.println("Lỗi gửi LEAVE: " + e.getMessage());
+        // Đóng tất cả kết nối peer
+        for (Socket socket : peerConnections.values()) {
+            try {
+                socket.close();
+            } catch (IOException e) {
+                // Ignore
+            }
         }
+        peerConnections.clear();
 
-        if (socket != null && !socket.isClosed()) {
-            socket.close();
+        // Đóng server socket
+        try {
+            if (serverSocket != null && !serverSocket.isClosed()) {
+                serverSocket.close();
+            }
+        } catch (IOException e) {
+            System.err.println("Lỗi đóng server socket: " + e.getMessage());
         }
 
         if (executorService != null) {
@@ -134,118 +131,203 @@ public class PeerDiscovery {
     }
 
     /**
-     * ⭐ FIX: Cải thiện listenForPeers để xử lý chính xác hơn
+     * Lắng nghe kết nối từ peer khác
      */
-    private void listenForPeers() {
-        byte[] buffer = new byte[2048]; // Tăng buffer size
-
-        System.out.println("👂 Bắt đầu lắng nghe broadcast trên port " + DISCOVERY_PORT);
+    private void acceptPeerConnections() {
+        System.out.println("👂 Đang lắng nghe kết nối peer trên port " + DISCOVERY_PORT);
 
         while (running) {
             try {
-                DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-                socket.receive(packet);
+                Socket clientSocket = serverSocket.accept();
+                clientSocket.setSoTimeout(5000);
 
-                String senderIP = packet.getAddress().getHostAddress();
-
-                // Deserialize peer info
-                ByteArrayInputStream bais = new ByteArrayInputStream(packet.getData(), 0, packet.getLength());
-                ObjectInputStream ois = new ObjectInputStream(bais);
-                PeerInfo receivedPeer = (PeerInfo) ois.readObject();
-
-                // ⭐ FIX: KIỂM TRA CHÍNH MÌNH TRƯỚC KHI XỬ LÝ
-                if (receivedPeer.getPeerId().equals(localPeer.getPeerId())) {
-                    // Không log để giảm spam
-                    continue;
-                }
-
-                // Clone peer với IP thực từ UDP header
-                PeerInfo clonedPeer = new PeerInfo(
-                        receivedPeer.getPeerId(),
-                        senderIP,
-                        receivedPeer.getPort(),
-                        receivedPeer.getDisplayName()
-                );
-
-                // ⭐ FIX: KIỂM TRA SUBNET
-                if (!isSameSubnet(localPeer.getIpAddress(), clonedPeer.getIpAddress())) {
-                    System.out.println("⏭ Bỏ qua peer khác subnet: " + clonedPeer.getIpAddress());
-                    continue;
-                }
-
-                // Log nhận được broadcast
-                System.out.println("📩 Nhận broadcast từ: " + clonedPeer.getDisplayName() +
-                        " (" + clonedPeer.getIpAddress() + ":" + clonedPeer.getPort() + ")");
-
-                handleDiscoveredPeer(clonedPeer);
+                // Xử lý kết nối trong thread riêng
+                executorService.submit(() -> handlePeerConnection(clientSocket));
 
             } catch (SocketException e) {
-                break;
-            } catch (Exception e) {
                 if (running) {
-                    System.err.println("⚠ Lỗi nhận broadcast: " + e.getMessage());
+                    System.err.println("Socket error: " + e.getMessage());
+                }
+                break;
+            } catch (IOException e) {
+                if (running) {
+                    System.err.println("Lỗi accept connection: " + e.getMessage());
                 }
             }
         }
     }
 
     /**
-     * ⭐ FIX: Tính broadcast address chính xác
+     * Xử lý kết nối từ peer
      */
-    private InetAddress getCorrectBroadcastAddress() throws Exception {
-        String localIP = localPeer.getIpAddress();
-        String[] parts = localIP.split("\\.");
+    private void handlePeerConnection(Socket socket) {
+        try {
+            ObjectInputStream ois = new ObjectInputStream(socket.getInputStream());
+            ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
 
-        if (parts.length == 4) {
-            // Class C: x.x.x.255
-            String broadcastIP = parts[0] + "." + parts[1] + "." + parts[2] + ".255";
-            return InetAddress.getByName(broadcastIP);
+            // Nhận thông tin peer
+            String messageType = ois.readUTF();
+            PeerInfo remotePeer = (PeerInfo) ois.readObject();
+
+            // Kiểm tra không phải chính mình
+            if (remotePeer.getPeerId().equals(localPeer.getPeerId())) {
+                socket.close();
+                return;
+            }
+
+            // Cập nhật IP từ socket
+            String realIP = socket.getInetAddress().getHostAddress();
+            remotePeer = new PeerInfo(
+                    remotePeer.getPeerId(),
+                    realIP,
+                    remotePeer.getPort(),
+                    remotePeer.getDisplayName()
+            );
+
+            // Kiểm tra cùng subnet
+            if (!isSameSubnet(localPeer.getIpAddress(), realIP)) {
+                System.out.println("⏭ Bỏ qua peer khác subnet: " + realIP);
+                socket.close();
+                return;
+            }
+
+            if ("JOIN".equals(messageType) || "HEARTBEAT".equals(messageType)) {
+                // Gửi response với thông tin của mình
+                oos.writeUTF("ACK");
+                oos.writeObject(localPeer);
+                oos.flush();
+
+                System.out.println("📩 Nhận " + messageType + " từ: " + remotePeer.getDisplayName() +
+                        " (" + realIP + ":" + remotePeer.getPort() + ")");
+
+                handleDiscoveredPeer(remotePeer);
+            }
+
+            socket.close();
+
+        } catch (Exception e) {
+            if (running) {
+                System.err.println("Lỗi xử lý peer connection: " + e.getMessage());
+            }
         }
-
-        // Fallback
-        return InetAddress.getByName("255.255.255.255");
     }
 
     /**
-     * ⭐ FIX: Gửi broadcast với logging rõ ràng
+     * Quét mạng LAN để tìm peer
      */
-    private void sendBroadcast(String context) {
+    private void scanNetwork() {
+        while (running) {
+            try {
+                String baseIP = getBaseIP(localPeer.getIpAddress());
+                System.out.println("🔍 Quét mạng: " + baseIP + ".*");
+
+                List<Future<?>> scanTasks = new ArrayList<>();
+
+                // Quét dải IP từ 1-254
+                for (int i = 1; i <= 254; i++) {
+                    final String targetIP = baseIP + "." + i;
+
+                    // Bỏ qua IP của chính mình
+                    if (targetIP.equals(localPeer.getIpAddress())) {
+                        continue;
+                    }
+
+                    // Quét từng IP trong thread riêng
+                    Future<?> task = executorService.submit(() -> tryConnectToPeer(targetIP));
+                    scanTasks.add(task);
+                }
+
+                // Đợi tất cả scan task hoàn thành
+                for (Future<?> task : scanTasks) {
+                    try {
+                        task.get(CONNECTION_TIMEOUT + 1000, TimeUnit.MILLISECONDS);
+                    } catch (Exception e) {
+                        // Timeout hoặc lỗi - bỏ qua
+                    }
+                }
+
+                System.out.println("✓ Hoàn thành quét mạng. Tìm thấy " + discoveredPeers.size() + " peer(s)");
+
+                // Đợi trước khi quét lại
+                Thread.sleep(SCAN_INTERVAL);
+
+            } catch (InterruptedException e) {
+                break;
+            } catch (Exception e) {
+                System.err.println("Lỗi quét mạng: " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Thử kết nối đến peer tại IP cụ thể
+     */
+    private void tryConnectToPeer(String targetIP) {
+        Socket socket = null;
         try {
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            ObjectOutputStream oos = new ObjectOutputStream(baos);
+            // Thử kết nối với timeout ngắn
+            socket = new Socket();
+            socket.connect(new InetSocketAddress(targetIP, DISCOVERY_PORT), CONNECTION_TIMEOUT);
+            socket.setSoTimeout(5000);
+
+            // Gửi JOIN message
+            ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
+            oos.writeUTF("JOIN");
             oos.writeObject(localPeer);
             oos.flush();
 
-            byte[] data = baos.toByteArray();
-            InetAddress broadcastAddress = getCorrectBroadcastAddress();
+            // Nhận response
+            ObjectInputStream ois = new ObjectInputStream(socket.getInputStream());
+            String response = ois.readUTF();
 
-            DatagramPacket packet = new DatagramPacket(
-                    data, data.length, broadcastAddress, DISCOVERY_PORT
-            );
+            if ("ACK".equals(response)) {
+                PeerInfo remotePeer = (PeerInfo) ois.readObject();
 
-            socket.send(packet);
+                // Cập nhật IP thực
+                remotePeer = new PeerInfo(
+                        remotePeer.getPeerId(),
+                        targetIP,
+                        remotePeer.getPort(),
+                        remotePeer.getDisplayName()
+                );
 
-            if (context.startsWith("join")) {
-                System.out.println("📢 Broadcast " + context + " → " +
-                        broadcastAddress.getHostAddress() + ":" + DISCOVERY_PORT +
-                        " (" + data.length + " bytes)");
+                handleDiscoveredPeer(remotePeer);
             }
 
-        } catch (Exception e) {
-            System.err.println("❌ Lỗi gửi broadcast: " + e.getMessage());
-            e.printStackTrace();
+        } catch (IOException | ClassNotFoundException e) {
+            // Không có peer tại IP này - bỏ qua
+        } finally {
+            if (socket != null) {
+                try {
+                    socket.close();
+                } catch (IOException e) {
+                    // Ignore
+                }
+            }
         }
     }
 
     /**
-     * Heartbeat thread
+     * Heartbeat và kiểm tra timeout
      */
-    private void broadcastHeartbeat() {
+    private void heartbeatAndTimeoutChecker() {
         int count = 0;
+
         while (running) {
             try {
-                sendBroadcast("heartbeat");
                 count++;
+                long currentTime = System.currentTimeMillis();
+
+                // Gửi heartbeat đến các peer đã biết
+                for (PeerInfo peer : new ArrayList<>(discoveredPeers.values())) {
+                    executorService.submit(() -> sendHeartbeat(peer));
+
+                    // Kiểm tra timeout
+                    if (currentTime - peer.getLastSeen() > PEER_TIMEOUT) {
+                        discoveredPeers.remove(peer.getPeerId());
+                        notifyPeerLost(peer);
+                    }
+                }
 
                 // Log mỗi 30 giây
                 if (count % 6 == 1) {
@@ -258,42 +340,49 @@ public class PeerDiscovery {
                 break;
             } catch (Exception e) {
                 if (running) {
-                    System.err.println("❌ Lỗi heartbeat: " + e.getMessage());
+                    System.err.println("Lỗi heartbeat: " + e.getMessage());
                 }
             }
         }
     }
 
     /**
-     * Timeout checker
+     * Gửi heartbeat đến peer
      */
-    private void checkPeerTimeout() {
-        while (running) {
-            try {
-                long currentTime = System.currentTimeMillis();
-                List<PeerInfo> timeoutPeers = new ArrayList<>();
+    private void sendHeartbeat(PeerInfo peer) {
+        Socket socket = null;
+        try {
+            socket = new Socket();
+            socket.connect(new InetSocketAddress(peer.getIpAddress(), DISCOVERY_PORT), CONNECTION_TIMEOUT);
+            socket.setSoTimeout(3000);
 
-                for (PeerInfo peer : discoveredPeers.values()) {
-                    if (currentTime - peer.getLastSeen() > PEER_TIMEOUT) {
-                        timeoutPeers.add(peer);
-                    }
+            ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
+            oos.writeUTF("HEARTBEAT");
+            oos.writeObject(localPeer);
+            oos.flush();
+
+            ObjectInputStream ois = new ObjectInputStream(socket.getInputStream());
+            String response = ois.readUTF();
+
+            if ("ACK".equals(response)) {
+                peer.updateLastSeen();
+            }
+
+        } catch (IOException e) {
+            // Peer không phản hồi - sẽ bị timeout sau
+        } finally {
+            if (socket != null) {
+                try {
+                    socket.close();
+                } catch (IOException e) {
+                    // Ignore
                 }
-
-                for (PeerInfo peer : timeoutPeers) {
-                    discoveredPeers.remove(peer.getPeerId());
-                    notifyPeerLost(peer);
-                }
-
-                Thread.sleep(5000);
-
-            } catch (InterruptedException e) {
-                break;
             }
         }
     }
 
     /**
-     * ⭐ FIX: Xử lý peer với logging rõ ràng
+     * Xử lý peer mới phát hiện
      */
     private void handleDiscoveredPeer(PeerInfo peer) {
         boolean isNewPeer = !discoveredPeers.containsKey(peer.getPeerId());
@@ -314,6 +403,40 @@ public class PeerDiscovery {
         }
     }
 
+    /**
+     * Lấy base IP (3 octet đầu) từ IP address
+     */
+    private String getBaseIP(String ip) {
+        String[] parts = ip.split("\\.");
+        if (parts.length == 4) {
+            return parts[0] + "." + parts[1] + "." + parts[2];
+        }
+        return "192.168.1"; // Fallback
+    }
+
+    /**
+     * Kiểm tra cùng subnet
+     */
+    private boolean isSameSubnet(String ip1, String ip2) {
+        try {
+            String[] parts1 = ip1.split("\\.");
+            String[] parts2 = ip2.split("\\.");
+
+            if (parts1.length != 4 || parts2.length != 4) {
+                return false;
+            }
+
+            // Class C (/24)
+            return parts1[0].equals(parts2[0]) &&
+                    parts1[1].equals(parts2[1]) &&
+                    parts1[2].equals(parts2[2]);
+
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // Listener methods
     public void addListener(PeerDiscoveryListener listener) {
         listeners.add(listener);
     }
@@ -343,6 +466,7 @@ public class PeerDiscovery {
         }
     }
 
+    // Getter methods
     public List<PeerInfo> getDiscoveredPeers() {
         return new ArrayList<>(discoveredPeers.values());
     }
@@ -353,33 +477,5 @@ public class PeerDiscovery {
 
     public PeerInfo getPeerById(String peerId) {
         return discoveredPeers.get(peerId);
-    }
-
-    /**
-     * Kiểm tra cùng subnet
-     */
-    private boolean isSameSubnet(String ip1, String ip2) {
-        try {
-            String[] parts1 = ip1.split("\\.");
-            String[] parts2 = ip2.split("\\.");
-
-            if (parts1.length != 4 || parts2.length != 4) {
-                return false;
-            }
-
-            // Class C (/24)
-            boolean classC = parts1[0].equals(parts2[0]) &&
-                    parts1[1].equals(parts2[1]) &&
-                    parts1[2].equals(parts2[2]);
-
-            // Class B (/16)
-            boolean classB = parts1[0].equals(parts2[0]) &&
-                    parts1[1].equals(parts2[1]);
-
-            return classC || classB;
-
-        } catch (Exception e) {
-            return false;
-        }
     }
 }
