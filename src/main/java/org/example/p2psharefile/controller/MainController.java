@@ -6,9 +6,10 @@ import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.fxml.FXML;
+import javafx.geometry.Pos;
 import javafx.scene.control.*;
 import javafx.scene.control.cell.PropertyValueFactory;
-import javafx.scene.layout.VBox;
+import javafx.scene.layout.*;
 import javafx.stage.DirectoryChooser;
 import javafx.stage.FileChooser;
 import javafx.util.Duration;
@@ -44,7 +45,7 @@ public class MainController implements P2PService.P2PServiceListener {
     // Tab 2: Chia sẻ file
     @FXML private Button addFileButton;
     @FXML private Button addDirectoryButton;
-    @FXML private ListView<FileInfo> sharedFilesListView;
+    @FXML private ListView<String> sharedFilesListView;
     @FXML private Label sharedFileCountLabel;
     
     // Tab 3: Tìm kiếm & Download
@@ -68,6 +69,7 @@ public class MainController implements P2PService.P2PServiceListener {
     private P2PService p2pService;
     private ObservableList<PeerInfo> peerList;
     private ObservableList<FileInfo> sharedFilesList;
+    private ObservableList<String> sharedFilesDisplay;
     private ObservableList<SearchResultItem> searchResults;
     
     private String downloadDirectory = System.getProperty("user.home") + "/Downloads/";
@@ -106,13 +108,17 @@ public class MainController implements P2PService.P2PServiceListener {
         // Khởi tạo observable lists
         peerList = FXCollections.observableArrayList();
         sharedFilesList = FXCollections.observableArrayList();
+        sharedFilesDisplay = FXCollections.observableArrayList();
         searchResults = FXCollections.observableArrayList();
         
         // Bind data vào UI
         peerListView.setItems(peerList);
-        sharedFilesListView.setItems(sharedFilesList);
+        sharedFilesListView.setItems(sharedFilesDisplay);
         searchResultsListView.setItems(searchResults);
         pinShareFileListView.setItems(sharedFilesList);
+        
+        // Setup custom cell factory cho sharedFilesListView với nút Hủy
+        setupSharedFilesListView();
         
         // Set default values - Port tự động random, không cần nhập
         displayNameField.setText("Peer_" + System.getProperty("user.name"));
@@ -325,12 +331,66 @@ public class MainController implements P2PService.P2PServiceListener {
     }
     
     /**
+     * Setup ListView cho shared files với nút Hủy
+     */
+    private void setupSharedFilesListView() {
+        sharedFilesListView.setCellFactory(param -> new javafx.scene.control.ListCell<String>() {
+            private final javafx.scene.control.Button removeBtn = new javafx.scene.control.Button("❌ Hủy");
+            private final javafx.scene.layout.HBox hbox = new javafx.scene.layout.HBox(10);
+            private final javafx.scene.control.Label label = new javafx.scene.control.Label();
+            
+            {
+                removeBtn.setStyle("-fx-background-color: #ff4757; -fx-text-fill: white; " +
+                                  "-fx-font-weight: bold; -fx-padding: 5 10; " +
+                                  "-fx-background-radius: 5; -fx-cursor: hand;");
+                removeBtn.setOnAction(event -> {
+                    String item = getItem();
+                    if (item != null && p2pService != null) {
+                        // Tìm FileInfo tương ứng và xóa
+                        for (FileInfo fileInfo : sharedFilesList) {
+                            if (item.startsWith(fileInfo.getFileName())) {
+                                p2pService.removeSharedFile(fileInfo);
+                                refreshSharedFiles();
+                                log("🗑️ Đã hủy chia sẻ: " + fileInfo.getFileName());
+                                break;
+                            }
+                        }
+                    }
+                });
+                
+                javafx.scene.layout.Region region = new javafx.scene.layout.Region();
+                javafx.scene.layout.HBox.setHgrow(region, javafx.scene.layout.Priority.ALWAYS);
+                hbox.getChildren().addAll(label, region, removeBtn);
+                hbox.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+            }
+            
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setGraphic(null);
+                } else {
+                    label.setText(item);
+                    setGraphic(hbox);
+                }
+            }
+        });
+    }
+    
+    /**
      * Refresh danh sách file chia sẻ
      */
     private void refreshSharedFiles() {
         if (p2pService != null) {
             sharedFilesList.clear();
             sharedFilesList.addAll(p2pService.getSharedFiles());
+            
+            // Cập nhật display list
+            sharedFilesDisplay.clear();
+            for (FileInfo fileInfo : sharedFilesList) {
+                sharedFilesDisplay.add(fileInfo.getFileName() + " (" + fileInfo.getFormattedSize() + ")");
+            }
+            
             sharedFileCountLabel.setText("Files: " + p2pService.getSharedFileCount());
         }
     }

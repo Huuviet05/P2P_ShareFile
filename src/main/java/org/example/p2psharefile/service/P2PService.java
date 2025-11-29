@@ -184,7 +184,7 @@ public class P2PService {
 
         try {
             // ⭐ BƯỚC 1: Start FileTransferService TRƯỚC để lấy port thực
-            System.out.println("\n[1/4] Khởi động FileTransferService...");
+            System.out.println("\n[1/5] Khởi động FileTransferService...");
             fileTransferService.start();
 
             // Port giờ đã được set bởi FileTransferService
@@ -192,17 +192,22 @@ public class P2PService {
             System.out.println("✓ FileTransferService started on port: " + actualPort);
 
             // ⭐ BƯỚC 2: Start FileSearchService
-            System.out.println("\n[2/4] Khởi động FileSearchService...");
+            System.out.println("\n[2/5] Khởi động FileSearchService...");
             fileSearchService.start();
             System.out.println("✓ FileSearchService started");
+            
+            // ⭐ BƯỚC 3: Start PINCodeService
+            System.out.println("\n[3/5] Khởi động PINCodeService...");
+            pinCodeService.start();
+            System.out.println("✓ PINCodeService started");
 
-            // ⭐ BƯỚC 3: Start PeerDiscovery NHƯNG CHƯA GỬI JOIN
-            System.out.println("\n[3/4] Khởi động PeerDiscovery (không gửi JOIN)...");
+            // ⭐ BƯỚC 4: Start PeerDiscovery NHƯNG CHƯA GỬI JOIN
+            System.out.println("\n[4/5] Khởi động PeerDiscovery (không gửi JOIN)...");
             peerDiscovery.start(false);  // ← false = không gửi JOIN ngay
             System.out.println("✓ PeerDiscovery started (listening mode)");
 
-            // ⭐ BƯỚC 4: GIỜ MỚI GỬI JOIN (sau khi TẤT CẢ đã sẵn sàng)
-            System.out.println("\n[4/4] Gửi JOIN announcement...");
+            // ⭐ BƯỚC 5: GIỜ MỚI GỬI JOIN (sau khi TẤT CẢ đã sẵn sàng)
+            System.out.println("\n[5/5] Gửi JOIN announcement...");
             peerDiscovery.sendJoinAnnouncement();
 
             running = true;
@@ -233,7 +238,7 @@ public class P2PService {
 
         System.out.println("🛑 Đang dừng P2P Service...");
 
-        // pinCodeService.stop();  // ← TẠM THỜI VÔ HIỆU HÓA
+        pinCodeService.stop();
         fileTransferService.stop();
         fileSearchService.stop();
         peerDiscovery.stop();
@@ -269,6 +274,19 @@ public class P2PService {
 
         fileSearchService.addSharedFile(file.getParent(), fileInfo);
         System.out.println("✓ Đã thêm file chia sẻ: " + file.getName());
+    }
+    
+    /**
+     * Xóa file khỏi danh sách chia sẻ
+     *
+     * @param fileInfo File cần xóa
+     */
+    public void removeSharedFile(FileInfo fileInfo) {
+        if (fileInfo == null) return;
+        
+        File file = new File(fileInfo.getFilePath());
+        fileSearchService.removeSharedFile(file.getParent(), fileInfo.getFileName());
+        System.out.println("🗑️ Đã xóa file khỏi chia sẻ: " + fileInfo.getFileName());
     }
 
     /**
@@ -396,7 +414,18 @@ public class P2PService {
             return null;
         }
 
-        return pinCodeService.createPIN(fileInfo);
+        ShareSession session = pinCodeService.createPIN(fileInfo);
+        
+        // Broadcast PIN đến tất cả peers
+        if (session != null) {
+            List<PeerInfo> peers = peerDiscovery.getDiscoveredPeers();
+            System.out.println("📡 Broadcasting PIN " + session.getPin() + " đến " + peers.size() + " peer(s)");
+            for (PeerInfo peer : peers) {
+                pinCodeService.sendPINToPeer(session, peer);
+            }
+        }
+        
+        return session;
     }
 
     /**
