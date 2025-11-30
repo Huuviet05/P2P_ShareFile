@@ -10,7 +10,9 @@ import java.util.concurrent.*;
 /**
  * FileSearchService - Tìm kiếm file qua TCP socket
  *
- * Thay vì UDP broadcast, dùng TCP để gửi search request trực tiếp đến các peer
+ * Sử dụng TCP để gửi SearchRequest trực tiếp đến các peer đã phát hiện (không sử
+ * dụng UDP broadcast trong thiết kế hiện tại). Phần forwarding dùng TTL để giới hạn
+ * phạm vi forward trong mạng LAN.
  */
 public class FileSearchService {
 

@@ -189,7 +189,7 @@ public class PINCodeService {
             // Không gửi cho chính mình
             if (peer.getPeerId().equals(localPeer.getPeerId())) continue;
 
-            sendPINToPeer(session, peer);
+            sendPINToPeerTcp(session, peer);
         }
     }
     
@@ -274,15 +274,15 @@ public class PINCodeService {
     /**
      * Gửi PIN đến một peer cụ thể
      */
-    public void sendPINToPeer(ShareSession session, PeerInfo peer) {
+    public void sendPINToPeerTcp(ShareSession session, PeerInfo peer) {
         try (Socket socket = new Socket(peer.getIpAddress(), PIN_SERVER_PORT);
              ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream())) {
-            
+
             oos.writeObject(session);
             oos.flush();
-            
+
             System.out.println("📤 Đã gửi PIN đến " + peer.getDisplayName());
-            
+
         } catch (IOException e) {
             System.err.println("Lỗi khi gửi PIN: " + e.getMessage());
         }
