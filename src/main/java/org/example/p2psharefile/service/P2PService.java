@@ -12,7 +12,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * Module 7: P2PService - Service chính quản lý toàn bộ ứng dụng P2P
  *
  * Đây là lớp "facade" tổng hợp tất cả các module:
- * - Peer Discovery (UDP)
+ * - Peer Discovery (TCP)
  * - File Search (Flooding)
  * - File Transfer (TCP)
  *
@@ -60,7 +60,7 @@ public class P2PService {
         this.peerDiscovery = new PeerDiscovery(localPeer);
         this.fileSearchService = new FileSearchService(localPeer, peerDiscovery);
         this.fileTransferService = new FileTransferService(localPeer);
-        this.pinCodeService = new PINCodeService(localPeer);  // ← Khởi tạo PIN Service
+        this.pinCodeService = new PINCodeService(localPeer, peerDiscovery);  // ← Khởi tạo PIN Service
 
         this.listeners = new CopyOnWriteArrayList<>();
 
@@ -415,15 +415,8 @@ public class P2PService {
         }
 
         ShareSession session = pinCodeService.createPIN(fileInfo);
-        
-        // Broadcast PIN đến tất cả peers
-        if (session != null) {
-            List<PeerInfo> peers = peerDiscovery.getDiscoveredPeers();
-            System.out.println("📡 Broadcasting PIN " + session.getPin() + " đến " + peers.size() + " peer(s)");
-            for (PeerInfo peer : peers) {
-                pinCodeService.sendPINToPeer(session, peer);
-            }
-        }
+
+        // PIN sẽ được gửi bởi PINCodeService.sendPINToAllPeers
         
         return session;
     }

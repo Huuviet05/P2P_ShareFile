@@ -435,11 +435,11 @@ public class MainController implements P2PService.P2PServiceListener {
                     startPINExpiryTimer();
                     
                     log("🔑 Đã tạo mã PIN: " + currentPINSession.getPin() + " cho file: " + fileInfo.getFileName());
-                    showInfo("Mã PIN đã được tạo!\n\n" +
+                        showInfo("Mã PIN đã được tạo!\n\n" +
                             "Mã: " + currentPINSession.getPin() + "\n" +
                             "File: " + fileInfo.getFileName() + "\n" +
                             "Hết hạn sau: 10 phút\n\n" +
-                            "Mã này đã được broadcast tới tất cả peers.");
+                            "Mã này đã được gửi tới tất cả peers.");
                 } else {
                     showError("Không thể tạo mã PIN");
                 }

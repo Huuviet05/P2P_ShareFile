@@ -1,6 +1,7 @@
 package org.example.p2psharefile.service;
 
 import org.example.p2psharefile.model.*;
+import org.example.p2psharefile.network.PeerDiscovery;
 
 import java.io.*;
 import java.net.*;
@@ -23,6 +24,7 @@ public class PINCodeService {
     private static final int PIN_SERVER_PORT = 8887;   // Port để sync PIN giữa peers
     
     private final PeerInfo localPeer;
+    private final PeerDiscovery peerDiscovery;
     private final Map<String, ShareSession> localSessions;  // PIN do mình tạo
     private final Map<String, ShareSession> globalSessions; // PIN từ tất cả peers
     
@@ -39,8 +41,9 @@ public class PINCodeService {
         void onPINReceived(ShareSession session);
     }
     
-    public PINCodeService(PeerInfo localPeer) {
+    public PINCodeService(PeerInfo localPeer, PeerDiscovery peerDiscovery) {
         this.localPeer = localPeer;
+        this.peerDiscovery = peerDiscovery;
         this.localSessions = new ConcurrentHashMap<>();
         this.globalSessions = new ConcurrentHashMap<>();
         this.listeners = new CopyOnWriteArrayList<>();
@@ -109,9 +112,9 @@ public class PINCodeService {
         globalSessions.put(pin, session);
         
         System.out.println("✓ Đã tạo PIN: " + pin + " cho file: " + fileInfo.getFileName());
-        
-        // Broadcast PIN đến các peer khác
-        broadcastPIN(session);
+
+        // Gửi PIN đến các peer khác (sử dụng PeerDiscovery để lấy danh sách peers)
+        sendPINToAllPeers(session);
         
         // Thông báo listeners
         notifyPINCreated(session);
@@ -171,12 +174,23 @@ public class PINCodeService {
     }
     
     /**
-     * Broadcast PIN đến tất cả peers
+     * Gửi PIN đến tất cả peers
      */
-    private void broadcastPIN(ShareSession session) {
-        // TODO: Gửi qua mạng đến các peer khác
-        // Sẽ implement sau khi có PeerDiscovery list
-        System.out.println("📡 Broadcasting PIN: " + session.getPin());
+    private void sendPINToAllPeers(ShareSession session) {
+        if (peerDiscovery == null) {
+            System.out.println("⚠ Không có PeerDiscovery để gửi PIN: " + session.getPin());
+            return;
+        }
+
+        List<PeerInfo> peers = peerDiscovery.getDiscoveredPeers();
+        System.out.println("📡 Gửi PIN: " + session.getPin() + " đến " + peers.size() + " peer(s)");
+
+        for (PeerInfo peer : peers) {
+            // Không gửi cho chính mình
+            if (peer.getPeerId().equals(localPeer.getPeerId())) continue;
+
+            sendPINToPeer(session, peer);
+        }
     }
     
     /**

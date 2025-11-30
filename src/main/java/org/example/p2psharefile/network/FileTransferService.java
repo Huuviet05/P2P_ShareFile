@@ -21,7 +21,10 @@ import java.util.concurrent.*;
  * 
  * TCP vs UDP:
  * - TCP: Đảm bảo dữ liệu đến đúng thứ tự, không mất, phù hợp cho truyền file
- * - UDP: Không đảm bảo, có thể mất/lỗi thứ tự, phù hợp cho broadcast
+ * - UDP: Không đảm bảo, có thể mất/lỗi thứ tự, thường dùng cho các thông điệp broadcast/multicast
+ *
+ * Lưu ý: trong dự án này, PeerDiscovery đã chuyển sang dùng TCP kết nối trực tiếp
+ * (không dùng UDP broadcast) — phần File Transfer vẫn sử dụng TCP.
  */
 public class FileTransferService {
     

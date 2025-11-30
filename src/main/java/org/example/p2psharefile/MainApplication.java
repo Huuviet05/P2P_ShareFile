@@ -45,7 +45,7 @@ public class MainApplication extends Application {
         System.out.println("=".repeat(60));
         System.out.println("📚 Ứng dụng chia sẻ file P2P thuần túy");
         System.out.println("✨ Tính năng:");
-        System.out.println("   - Peer Discovery (UDP Broadcast)");
+        System.out.println("   - Peer Discovery (TCP - kết nối trực tiếp)");
         System.out.println("   - File Search (Flooding Algorithm)");
         System.out.println("   - File Transfer (TCP)");
         System.out.println("   - Compression (GZIP)");

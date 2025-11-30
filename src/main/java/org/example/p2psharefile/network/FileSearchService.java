@@ -35,6 +35,59 @@ public class FileSearchService {
         void onSearchComplete();
     }
 
+    /**
+     * Forward request to discovered peers (except origin/self) and relay any SearchResponse
+     * that contains files back to the origin peer (if origin known via PeerDiscovery).
+     */
+    private void forwardRequestToPeersAndRelay(SearchRequest request) {
+        List<PeerInfo> peers = peerDiscovery.getDiscoveredPeers();
+
+        for (PeerInfo peer : peers) {
+            try {
+                // Skip self and origin
+                if (peer.getPeerId().equals(localPeer.getPeerId())) continue;
+                if (peer.getPeerId().equals(request.getOriginPeerId())) continue;
+
+                Socket socket = new Socket();
+                socket.connect(new InetSocketAddress(peer.getIpAddress(), SEARCH_PORT), CONNECTION_TIMEOUT);
+                socket.setSoTimeout(SEARCH_TIMEOUT);
+
+                try (ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
+                     ObjectInputStream ois = new ObjectInputStream(socket.getInputStream())) {
+
+                    oos.writeObject(request);
+                    oos.flush();
+
+                    Object obj = ois.readObject();
+                    if (obj instanceof SearchResponse) {
+                        SearchResponse resp = (SearchResponse) obj;
+                        if (resp != null && !resp.getFoundFiles().isEmpty()) {
+                            // Relay this response to origin peer if possible
+                            PeerInfo origin = peerDiscovery.getPeerById(request.getOriginPeerId());
+                            if (origin != null && !origin.getPeerId().equals(localPeer.getPeerId())) {
+                                try (Socket relay = new Socket()) {
+                                    relay.connect(new InetSocketAddress(origin.getIpAddress(), SEARCH_PORT), CONNECTION_TIMEOUT);
+                                    try (ObjectOutputStream roos = new ObjectOutputStream(relay.getOutputStream())) {
+                                        roos.writeObject(resp);
+                                        roos.flush();
+                                    }
+                                } catch (IOException e) {
+                                    // Cannot relay to origin - ignore
+                                }
+                            }
+                        }
+                    }
+
+                } finally {
+                    try { socket.close(); } catch (IOException ignored) {}
+                }
+
+            } catch (Exception e) {
+                // ignore individual peer failures
+            }
+        }
+    }
+
     public FileSearchService(PeerInfo localPeer, PeerDiscovery peerDiscovery) {
         this.localPeer = localPeer;
         this.peerDiscovery = peerDiscovery;
@@ -133,9 +186,21 @@ public class FileSearchService {
                 // Xử lý search request
                 SearchResponse response = processSearchRequest(request);
 
-                // Gửi response
+                // Gửi response (kết quả local)
                 oos.writeObject(response);
                 oos.flush();
+
+                // Nếu còn TTL, forward request đến peers khác và relay response về origin khi có kết quả
+                if (request.canForward()) {
+                    // Tạo bản sao request để forward (giảm TTL)
+                    SearchRequest forwardReq = new SearchRequest(request.getRequestId(), request.getOriginPeerId(), request.getSearchQuery(), request.getTtl());
+                    forwardReq.decrementTTL();
+
+                    // Submit forwarding task
+                    executorService.submit(() -> {
+                        forwardRequestToPeersAndRelay(forwardReq);
+                    });
+                }
             }
 
             socket.close();
