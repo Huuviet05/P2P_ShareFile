@@ -128,7 +128,7 @@ public class P2PService {
                     displayName.contains("hyper-v") ||
                     displayName.contains("vmware") ||
                     displayName.contains("vbox")) {
-                    System.out.println("⏭ Bỏ qua virtual interface: " + networkInterface.getName() + " (" + networkInterface.getDisplayName() + ")");
+                    // Bỏ qua virtual interface (không log để tránh nhiễu)
                     continue;
                 }
                 
