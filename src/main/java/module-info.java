@@ -1,6 +1,10 @@
 module org.example.p2psharefile {
     requires javafx.controls;
     requires javafx.fxml;
+    
+    // Bouncy Castle for TLS certificate generation
+    requires org.bouncycastle.provider;
+    requires org.bouncycastle.pkix;
 
     // Mở package cho JavaFX để có thể sử dụng reflection
     opens org.example.p2psharefile to javafx.fxml;

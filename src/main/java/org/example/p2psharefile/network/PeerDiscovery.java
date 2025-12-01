@@ -1,20 +1,31 @@
 package org.example.p2psharefile.network;
 
 import org.example.p2psharefile.model.PeerInfo;
+import org.example.p2psharefile.model.SignedMessage;
+import org.example.p2psharefile.security.SecurityManager;
 
+import javax.net.ssl.*;
 import java.io.*;
 import java.net.*;
+import java.security.PublicKey;
 import java.util.*;
 import java.util.concurrent.*;
 
 /**
- * PeerDiscovery với TCP Socket - Phát hiện peer qua kết nối trực tiếp
- *
- * Cơ chế hoạt động:
- * 1. Mỗi peer mở ServerSocket để lắng nghe kết nối
- * 2. Peer quét dải IP trong subnet để tìm peer khác
- * 3. Khi tìm thấy peer, thiết lập kết nối TCP và trao đổi thông tin
- * 4. Duy trì kết nối với heartbeat để kiểm tra peer còn online
+ * PeerDiscovery với TLS + Peer Authentication
+ * 
+ * Cơ chế hoạt động (với TLS + Signatures):
+ * 1. Mỗi peer mở SSLServerSocket để lắng nghe kết nối
+ * 2. Peer quét dải IP trong subnet để tìm peer khác (dùng SSLSocket)
+ * 3. Khi tìm thấy peer, thiết lập TLS connection và trao đổi thông tin
+ * 4. JOIN/HEARTBEAT messages được ký bằng ECDSA private key
+ * 5. Peer nhận message verify signature bằng public key từ PeerInfo
+ * 6. Duy trì kết nối với heartbeat để kiểm tra peer còn online
+ * 
+ * Security improvements:
+ * - TLS encryption cho tất cả communications
+ * - ECDSA signatures chống message forgery/impersonation
+ * - Public key distribution qua PeerInfo
  */
 public class PeerDiscovery {
 
@@ -25,11 +36,12 @@ public class PeerDiscovery {
     private static final int CONNECTION_TIMEOUT = 2000; // 2 giây timeout kết nối
 
     private final PeerInfo localPeer;
+    private final SecurityManager securityManager;
     private final Map<String, PeerInfo> discoveredPeers;
     private final Map<String, Socket> peerConnections; // Kết nối TCP với peer
     private final List<PeerDiscoveryListener> listeners;
 
-    private ServerSocket serverSocket;
+    private SSLServerSocket serverSocket;
     private ExecutorService executorService;
     private volatile boolean running = false;
 
@@ -38,8 +50,9 @@ public class PeerDiscovery {
         void onPeerLost(PeerInfo peer);
     }
 
-    public PeerDiscovery(PeerInfo localPeer) {
+    public PeerDiscovery(PeerInfo localPeer, SecurityManager securityManager) {
         this.localPeer = localPeer;
+        this.securityManager = securityManager;
         this.discoveredPeers = new ConcurrentHashMap<>();
         this.peerConnections = new ConcurrentHashMap<>();
         this.listeners = new CopyOnWriteArrayList<>();
@@ -53,13 +66,14 @@ public class PeerDiscovery {
 
         running = true;
 
-        // Tạo ServerSocket để lắng nghe kết nối từ peer khác
-        serverSocket = new ServerSocket(DISCOVERY_PORT);
+        // Tạo SSLServerSocket để lắng nghe kết nối từ peer khác (TLS enabled)
+        serverSocket = securityManager.createSSLServerSocket(DISCOVERY_PORT);
         serverSocket.setReuseAddress(true);
 
-        System.out.println("✓ Peer Discovery TCP đã khởi động trên port " + DISCOVERY_PORT);
+        System.out.println("✓ Peer Discovery TLS đã khởi động trên port " + DISCOVERY_PORT);
         System.out.println("  → Local Peer: " + localPeer.getDisplayName() +
                 " (" + localPeer.getIpAddress() + ":" + localPeer.getPort() + ")");
+        System.out.println("  → Public Key: " + localPeer.getPublicKey().substring(0, 40) + "...");
 
         executorService = Executors.newCachedThreadPool();
 
@@ -138,8 +152,12 @@ public class PeerDiscovery {
 
         while (running) {
             try {
-                Socket clientSocket = serverSocket.accept();
+                // Accept SSL connection
+                SSLSocket clientSocket = (SSLSocket) serverSocket.accept();
                 clientSocket.setSoTimeout(5000);
+                
+                // Start SSL handshake
+                clientSocket.startHandshake();
 
                 // Xử lý kết nối trong thread riêng
                 executorService.submit(() -> handlePeerConnection(clientSocket));
@@ -158,16 +176,17 @@ public class PeerDiscovery {
     }
 
     /**
-     * Xử lý kết nối từ peer
+     * Xử lý kết nối từ peer (với TLS + signature verification)
      */
-    private void handlePeerConnection(Socket socket) {
+    private void handlePeerConnection(SSLSocket socket) {
         try {
             ObjectInputStream ois = new ObjectInputStream(socket.getInputStream());
             ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
 
-            // Nhận thông tin peer
-            String messageType = ois.readUTF();
-            PeerInfo remotePeer = (PeerInfo) ois.readObject();
+            // Nhận SignedMessage
+            SignedMessage signedMsg = (SignedMessage) ois.readObject();
+            String messageType = signedMsg.getMessageType();
+            PeerInfo remotePeer = (PeerInfo) signedMsg.getPayload();
 
             // Kiểm tra không phải chính mình
             if (remotePeer.getPeerId().equals(localPeer.getPeerId())) {
@@ -177,12 +196,7 @@ public class PeerDiscovery {
 
             // Cập nhật IP từ socket
             String realIP = socket.getInetAddress().getHostAddress();
-            remotePeer = new PeerInfo(
-                    remotePeer.getPeerId(),
-                    realIP,
-                    remotePeer.getPort(),
-                    remotePeer.getDisplayName()
-            );
+            remotePeer.setIpAddress(realIP);
 
             // Kiểm tra cùng subnet
             if (!isSameSubnet(localPeer.getIpAddress(), realIP)) {
@@ -191,10 +205,21 @@ public class PeerDiscovery {
                 return;
             }
 
+            // ✅ VERIFY SIGNATURE
+            if (!verifyPeerSignature(signedMsg, remotePeer)) {
+                System.err.println("❌ [Security] Invalid signature from peer: " + remotePeer.getDisplayName());
+                socket.close();
+                return;
+            }
+            
+            System.out.println("✅ [Security] Signature verified for peer: " + remotePeer.getDisplayName());
+
             if ("JOIN".equals(messageType) || "HEARTBEAT".equals(messageType)) {
+                // Tạo signed response
+                SignedMessage response = createSignedMessage("ACK", localPeer);
+                
                 // Gửi response với thông tin của mình
-                oos.writeUTF("ACK");
-                oos.writeObject(localPeer);
+                oos.writeObject(response);
                 oos.flush();
 
                 System.out.println("📩 Nhận " + messageType + " từ: " + remotePeer.getDisplayName() +
@@ -208,6 +233,7 @@ public class PeerDiscovery {
         } catch (Exception e) {
             if (running) {
                 System.err.println("Lỗi xử lý peer connection: " + e.getMessage());
+                e.printStackTrace();
             }
         }
     }
@@ -260,42 +286,48 @@ public class PeerDiscovery {
     }
 
     /**
-     * Thử kết nối đến peer tại IP cụ thể
+     * Thử kết nối đến peer tại IP cụ thể (với TLS + signatures)
      */
     private void tryConnectToPeer(String targetIP) {
-        Socket socket = null;
+        SSLSocket socket = null;
         try {
-            // Thử kết nối với timeout ngắn
-            socket = new Socket();
+            // Tạo SSLSocket và kết nối với timeout
+            socket = securityManager.createSSLSocket(targetIP, DISCOVERY_PORT);
             socket.connect(new InetSocketAddress(targetIP, DISCOVERY_PORT), CONNECTION_TIMEOUT);
             socket.setSoTimeout(5000);
+            
+            // Start SSL handshake
+            socket.startHandshake();
 
-            // Gửi JOIN message
+            // Tạo signed JOIN message
+            SignedMessage joinMsg = createSignedMessage("JOIN", localPeer);
+            
+            // Gửi signed JOIN message
             ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
-            oos.writeUTF("JOIN");
-            oos.writeObject(localPeer);
+            oos.writeObject(joinMsg);
             oos.flush();
 
-            // Nhận response
+            // Nhận signed response
             ObjectInputStream ois = new ObjectInputStream(socket.getInputStream());
-            String response = ois.readUTF();
+            SignedMessage response = (SignedMessage) ois.readObject();
 
-            if ("ACK".equals(response)) {
-                PeerInfo remotePeer = (PeerInfo) ois.readObject();
+            if ("ACK".equals(response.getMessageType())) {
+                PeerInfo remotePeer = (PeerInfo) response.getPayload();
+                remotePeer.setIpAddress(targetIP);
 
-                // Cập nhật IP thực
-                remotePeer = new PeerInfo(
-                        remotePeer.getPeerId(),
-                        targetIP,
-                        remotePeer.getPort(),
-                        remotePeer.getDisplayName()
-                );
+                // Verify signature
+                if (!verifyPeerSignature(response, remotePeer)) {
+                    System.err.println("❌ [Security] Invalid signature from peer: " + targetIP);
+                    return;
+                }
 
                 handleDiscoveredPeer(remotePeer);
             }
 
         } catch (IOException | ClassNotFoundException e) {
             // Không có peer tại IP này - bỏ qua
+        } catch (Exception e) {
+            System.err.println("❌ Lỗi kết nối đến " + targetIP + ": " + e.getMessage());
         } finally {
             if (socket != null) {
                 try {
@@ -347,29 +379,37 @@ public class PeerDiscovery {
     }
 
     /**
-     * Gửi heartbeat đến peer
+     * Gửi heartbeat đến peer (với TLS + signature)
      */
     private void sendHeartbeat(PeerInfo peer) {
-        Socket socket = null;
+        SSLSocket socket = null;
         try {
-            socket = new Socket();
+            socket = securityManager.createSSLSocket(peer.getIpAddress(), DISCOVERY_PORT);
             socket.connect(new InetSocketAddress(peer.getIpAddress(), DISCOVERY_PORT), CONNECTION_TIMEOUT);
             socket.setSoTimeout(3000);
+            socket.startHandshake();
 
+            // Tạo signed HEARTBEAT message
+            SignedMessage heartbeatMsg = createSignedMessage("HEARTBEAT", localPeer);
+            
             ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
-            oos.writeUTF("HEARTBEAT");
-            oos.writeObject(localPeer);
+            oos.writeObject(heartbeatMsg);
             oos.flush();
 
             ObjectInputStream ois = new ObjectInputStream(socket.getInputStream());
-            String response = ois.readUTF();
+            SignedMessage response = (SignedMessage) ois.readObject();
 
-            if ("ACK".equals(response)) {
-                peer.updateLastSeen();
+            if ("ACK".equals(response.getMessageType())) {
+                // Verify signature
+                if (verifyPeerSignature(response, peer)) {
+                    peer.updateLastSeen();
+                }
             }
 
-        } catch (IOException e) {
+        } catch (IOException | ClassNotFoundException e) {
             // Peer không phản hồi - sẽ bị timeout sau
+        } catch (Exception e) {
+            System.err.println("❌ Lỗi heartbeat: " + e.getMessage());
         } finally {
             if (socket != null) {
                 try {
@@ -432,6 +472,50 @@ public class PeerDiscovery {
                     parts1[2].equals(parts2[2]);
 
         } catch (Exception e) {
+            return false;
+        }
+    }
+    
+    // ========== Security Helper Methods ==========
+    
+    /**
+     * Tạo signed message
+     */
+    private SignedMessage createSignedMessage(String messageType, PeerInfo payload) throws Exception {
+        String message = messageType + ":" + localPeer.getPeerId() + ":" + payload.toString();
+        String signature = securityManager.signMessage(message);
+        return new SignedMessage(messageType, localPeer.getPeerId(), signature, payload);
+    }
+    
+    /**
+     * Verify signature của message từ peer
+     */
+    private boolean verifyPeerSignature(SignedMessage signedMsg, PeerInfo peer) {
+        try {
+            // Lấy public key từ peer
+            if (peer.getPublicKey() == null) {
+                System.err.println("❌ [Security] Peer has no public key: " + peer.getDisplayName());
+                return false;
+            }
+            
+            PublicKey publicKey = SecurityManager.decodePublicKey(peer.getPublicKey());
+            
+            // Tạo message cần verify
+            String message = signedMsg.getMessageType() + ":" + signedMsg.getSenderId() + ":" + 
+                           signedMsg.getPayload().toString();
+            
+            // Verify
+            boolean valid = securityManager.verifySignature(message, signedMsg.getSignature(), publicKey);
+            
+            if (valid) {
+                // Thêm vào trusted peers
+                securityManager.addTrustedPeerKey(peer.getPeerId(), publicKey);
+            }
+            
+            return valid;
+            
+        } catch (Exception e) {
+            System.err.println("❌ [Security] Error verifying signature: " + e.getMessage());
             return false;
         }
     }

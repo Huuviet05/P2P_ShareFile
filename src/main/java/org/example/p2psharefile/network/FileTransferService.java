@@ -2,29 +2,31 @@ package org.example.p2psharefile.network;
 
 import org.example.p2psharefile.compression.FileCompression;
 import org.example.p2psharefile.security.AESEncryption;
+import org.example.p2psharefile.security.SecurityManager;
 import org.example.p2psharefile.model.FileInfo;
 import org.example.p2psharefile.model.PeerInfo;
 
 import javax.crypto.SecretKey;
+import javax.net.ssl.*;
 import java.io.*;
 import java.net.*;
 import java.nio.file.*;
 import java.util.concurrent.*;
 
 /**
- * Module 6: FileTransferService - Truyền file trực tiếp giữa các peer qua TCP
+ * FileTransferService - Truyền file qua TLS/SSL với mã hóa AES
  * 
- * Quy trình truyền file:
+ * Quy trình truyền file (với TLS + AES):
  * 1. Peer A yêu cầu download file từ Peer B
- * 2. Peer B đọc file → nén (GZIP) → mã hóa (AES) → gửi qua TCP
- * 3. Peer A nhận → giải mã → giải nén → lưu file
+ * 2. TLS channel được thiết lập (confidentiality + integrity)
+ * 3. Peer B đọc file → nén (GZIP) → mã hóa (AES) → gửi qua TLS
+ * 4. Peer A nhận → giải mã → giải nén → lưu file
  * 
- * TCP vs UDP:
- * - TCP: Đảm bảo dữ liệu đến đúng thứ tự, không mất, phù hợp cho truyền file
- * - UDP: Không đảm bảo, có thể mất/lỗi thứ tự, thường dùng cho các thông điệp broadcast/multicast
- *
- * Lưu ý: trong dự án này, PeerDiscovery đã chuyển sang dùng TCP kết nối trực tiếp
- * (không dùng UDP broadcast) — phần File Transfer vẫn sử dụng TCP.
+ * Security layers:
+ * - TLS: Bảo vệ transport channel
+ * - AES: Mã hóa file content (defense in depth)
+ * 
+ * Note: Có thể dùng ephemeral DH để tạo session key thay vì shared AES key
  */
 public class FileTransferService {
     
@@ -32,10 +34,11 @@ public class FileTransferService {
     private static final String DEFAULT_KEY = "P2PShareFileSecretKey123456789"; // Default AES key
     
     private final PeerInfo localPeer;
+    private final SecurityManager securityManager;
     private final SecretKey encryptionKey;
     private final int transferPort;
     
-    private ServerSocket transferServer;
+    private SSLServerSocket transferServer;
     private ExecutorService executorService;
     private volatile boolean running = false;
     
@@ -48,28 +51,30 @@ public class FileTransferService {
         void onError(Exception e);
     }
     
-    public FileTransferService(PeerInfo localPeer) {
+    public FileTransferService(PeerInfo localPeer, SecurityManager securityManager) {
         this.localPeer = localPeer;
+        this.securityManager = securityManager;
         this.transferPort = localPeer.getPort();
         // Tạo encryption key từ default key
         this.encryptionKey = AESEncryption.createKeyFromString(DEFAULT_KEY);
     }
     
-    public FileTransferService(PeerInfo localPeer, SecretKey customKey) {
+    public FileTransferService(PeerInfo localPeer, SecurityManager securityManager, SecretKey customKey) {
         this.localPeer = localPeer;
+        this.securityManager = securityManager;
         this.transferPort = localPeer.getPort();
         this.encryptionKey = customKey;
     }
     
     /**
-     * Bắt đầu dịch vụ truyền file
+     * Bắt đầu dịch vụ truyền file (với TLS)
      */
     public void start() throws IOException {
         if (running) return;
         
         running = true;
-        // Port = 0 nghĩa là hệ thống tự động chọn port trống
-        transferServer = new ServerSocket(transferPort);
+        // SSLServerSocket với port = 0 (auto-assign)
+        transferServer = securityManager.createSSLServerSocket(transferPort);
         
         // Nếu port = 0, lấy port thực tế được assign
         int actualPort = transferServer.getLocalPort();
@@ -80,7 +85,7 @@ public class FileTransferService {
         // Thread lắng nghe yêu cầu download
         executorService.submit(this::listenForTransferRequests);
         
-        System.out.println("✓ File Transfer Service đã khởi động trên port " + actualPort);
+        System.out.println("✓ File Transfer Service (TLS) đã khởi động trên port " + actualPort);
     }
     
     /**
@@ -182,7 +187,7 @@ public class FileTransferService {
     }
     
     /**
-     * Download file từ peer khác
+     * Download file từ peer khác (qua TLS)
      * 
      * @param peer Peer có file
      * @param fileInfo Thông tin file cần download
@@ -195,9 +200,11 @@ public class FileTransferService {
             try {
                 System.out.println("📥 Đang download file: " + fileInfo.getFileName() + " từ " + peer);
                 
-                // Kết nối đến peer (dùng port của peer đó)
-                Socket socket = new Socket(peer.getIpAddress(), peer.getPort());
+                // Kết nối đến peer qua TLS
+                SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), peer.getPort());
+                socket.connect(new InetSocketAddress(peer.getIpAddress(), peer.getPort()), 5000);
                 socket.setSoTimeout(60000); // Timeout 60 giây
+                socket.startHandshake();
                 
                 try (ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
                      DataInputStream dis = new DataInputStream(socket.getInputStream())) {
@@ -285,7 +292,7 @@ public class FileTransferService {
     }
     
     /**
-     * Upload file đơn giản (không qua request-response)
+     * Upload file đơn giản (không qua request-response) với TLS
      * Dùng khi muốn chủ động gửi file cho peer
      */
     public void uploadFileToPeer(PeerInfo peer, File file, TransferProgressListener listener) {
@@ -293,8 +300,11 @@ public class FileTransferService {
             try {
                 System.out.println("📤 Đang gửi file: " + file.getName() + " đến " + peer);
                 
-                // Kết nối đến peer (dùng port của peer đó)
-                Socket socket = new Socket(peer.getIpAddress(), peer.getPort());
+                // Kết nối đến peer qua TLS
+                SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), peer.getPort());
+                socket.connect(new InetSocketAddress(peer.getIpAddress(), peer.getPort()), 5000);
+                socket.setSoTimeout(60000);
+                socket.startHandshake();
                 
                 try (DataOutputStream dos = new DataOutputStream(socket.getOutputStream())) {
                     

@@ -1,18 +1,20 @@
 package org.example.p2psharefile.network;
 
 import org.example.p2psharefile.model.*;
+import org.example.p2psharefile.security.SecurityManager;
 
+import javax.net.ssl.*;
 import java.io.*;
 import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
 
 /**
- * FileSearchService - Tìm kiếm file qua TCP socket
+ * FileSearchService - Tìm kiếm file qua TLS/SSL socket
  *
- * Sử dụng TCP để gửi SearchRequest trực tiếp đến các peer đã phát hiện (không sử
- * dụng UDP broadcast trong thiết kế hiện tại). Phần forwarding dùng TTL để giới hạn
- * phạm vi forward trong mạng LAN.
+ * Security improvements:
+ * - Sử dụng SSLSocket để encrypt search requests/responses
+ * - Bảo vệ metadata (file names, sizes) khỏi eavesdropping
  */
 public class FileSearchService {
 
@@ -22,10 +24,11 @@ public class FileSearchService {
 
     private final PeerInfo localPeer;
     private final PeerDiscovery peerDiscovery;
+    private final SecurityManager securityManager;
     private final Map<String, List<FileInfo>> sharedFiles;
     private final Set<String> processedRequests;
 
-    private ServerSocket searchServer;
+    private SSLServerSocket searchServer;
     private ExecutorService executorService;
     private ScheduledExecutorService scheduledExecutor;
     private volatile boolean running = false;
@@ -50,9 +53,10 @@ public class FileSearchService {
                 if (peer.getPeerId().equals(localPeer.getPeerId())) continue;
                 if (peer.getPeerId().equals(request.getOriginPeerId())) continue;
 
-                Socket socket = new Socket();
+                SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), SEARCH_PORT);
                 socket.connect(new InetSocketAddress(peer.getIpAddress(), SEARCH_PORT), CONNECTION_TIMEOUT);
                 socket.setSoTimeout(SEARCH_TIMEOUT);
+                socket.startHandshake();
 
                 try (ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
                      ObjectInputStream ois = new ObjectInputStream(socket.getInputStream())) {
@@ -67,8 +71,9 @@ public class FileSearchService {
                             // Relay this response to origin peer if possible
                             PeerInfo origin = peerDiscovery.getPeerById(request.getOriginPeerId());
                             if (origin != null && !origin.getPeerId().equals(localPeer.getPeerId())) {
-                                try (Socket relay = new Socket()) {
+                                try (SSLSocket relay = securityManager.createSSLSocket(origin.getIpAddress(), SEARCH_PORT)) {
                                     relay.connect(new InetSocketAddress(origin.getIpAddress(), SEARCH_PORT), CONNECTION_TIMEOUT);
+                                    relay.startHandshake();
                                     try (ObjectOutputStream roos = new ObjectOutputStream(relay.getOutputStream())) {
                                         roos.writeObject(resp);
                                         roos.flush();
@@ -90,9 +95,10 @@ public class FileSearchService {
         }
     }
 
-    public FileSearchService(PeerInfo localPeer, PeerDiscovery peerDiscovery) {
+    public FileSearchService(PeerInfo localPeer, PeerDiscovery peerDiscovery, SecurityManager securityManager) {
         this.localPeer = localPeer;
         this.peerDiscovery = peerDiscovery;
+        this.securityManager = securityManager;
         this.sharedFiles = new ConcurrentHashMap<>();
         this.processedRequests = Collections.newSetFromMap(new ConcurrentHashMap<>());
         this.activeSearches = new ConcurrentHashMap<>();
@@ -103,11 +109,11 @@ public class FileSearchService {
 
         running = true;
 
-        // TCP ServerSocket để nhận search request
-        searchServer = new ServerSocket(SEARCH_PORT);
+        // SSLServerSocket để nhận search request
+        searchServer = securityManager.createSSLServerSocket(SEARCH_PORT);
         searchServer.setReuseAddress(true);
 
-        System.out.println("✓ File Search Service đã khởi động trên port " + SEARCH_PORT);
+        System.out.println("✓ File Search Service (TLS) đã khởi động trên port " + SEARCH_PORT);
         System.out.println("  → Local Peer IP: " + localPeer.getIpAddress());
 
         executorService = Executors.newCachedThreadPool();
@@ -116,7 +122,7 @@ public class FileSearchService {
         // Thread lắng nghe search request
         executorService.submit(this::acceptSearchRequests);
 
-        System.out.println("✓ File Search Service (TCP) đã sẵn sàng");
+        System.out.println("✓ File Search Service (TLS) đã sẵn sàng");
     }
 
     public void stop() {
@@ -303,15 +309,16 @@ public class FileSearchService {
     }
 
     /**
-     * Gửi search request đến một peer
+     * Gửi search request đến một peer (với TLS)
      */
     private void sendSearchRequest(PeerInfo peer, SearchRequest request, SearchResultCallback callback) {
-        Socket socket = null;
+        SSLSocket socket = null;
         try {
-            // Kết nối đến peer
-            socket = new Socket();
+            // Kết nối đến peer với TLS
+            socket = securityManager.createSSLSocket(peer.getIpAddress(), SEARCH_PORT);
             socket.connect(new InetSocketAddress(peer.getIpAddress(), SEARCH_PORT), CONNECTION_TIMEOUT);
             socket.setSoTimeout(5000);
+            socket.startHandshake();
 
             // Gửi request
             ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
@@ -332,6 +339,8 @@ public class FileSearchService {
         } catch (IOException | ClassNotFoundException e) {
             System.err.println("⚠ Không thể kết nối đến peer " + peer.getDisplayName() +
                     ": " + e.getMessage());
+        } catch (Exception e) {
+            System.err.println("❌ Lỗi search: " + e.getMessage());
         } finally {
             if (socket != null) {
                 try {

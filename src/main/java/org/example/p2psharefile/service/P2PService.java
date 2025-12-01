@@ -2,6 +2,7 @@ package org.example.p2psharefile.service;
 
 import org.example.p2psharefile.model.*;
 import org.example.p2psharefile.network.*;
+import org.example.p2psharefile.security.SecurityManager;
 
 import java.io.File;
 import java.io.IOException;
@@ -9,22 +10,31 @@ import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * Module 7: P2PService - Service chính quản lý toàn bộ ứng dụng P2P
+ * P2PService - Service chính quản lý toàn bộ ứng dụng P2P (với TLS + Peer Authentication)
  *
  * Đây là lớp "facade" tổng hợp tất cả các module:
- * - Peer Discovery (TCP)
- * - File Search (Flooding)
- * - File Transfer (TCP)
+ * - Security Manager (Keypair + TLS)
+ * - Peer Discovery (TLS + Signatures)
+ * - File Search (TLS)
+ * - File Transfer (TLS + AES)
+ * - PIN Code Service (TLS + Signatures)
  *
  * UI chỉ cần gọi P2PService, không cần biết chi tiết các module bên trong
+ * 
+ * Security features:
+ * - ECDSA keypair cho mỗi peer
+ * - TLS cho tất cả network channels
+ * - Signed control messages (JOIN/HEARTBEAT/PIN)
+ * - Public key distribution qua PeerInfo
  */
 public class P2PService {
 
     private final PeerInfo localPeer;
+    private final SecurityManager securityManager;
     private final PeerDiscovery peerDiscovery;
     private final FileSearchService fileSearchService;
     private final FileTransferService fileTransferService;
-    private final PINCodeService pinCodeService;  // ← Thêm PIN Code Service
+    private final PINCodeService pinCodeService;
 
     private final List<P2PServiceListener> listeners;
 
@@ -52,20 +62,39 @@ public class P2PService {
      * @param tcpPort Port TCP để nhận file
      */
     public P2PService(String displayName, int tcpPort) {
-        // Tạo peer info cho local peer
-        String peerId = UUID.randomUUID().toString();
-        this.localPeer = new PeerInfo(peerId, getLocalIPAddress(), tcpPort, displayName);
+        try {
+            // Tạo peer info cho local peer
+            String peerId = UUID.randomUUID().toString();
+            
+            // ⭐ BƯỚC 1: Khởi tạo SecurityManager TRƯỚC (để có keypair)
+            System.out.println("🔐 Initializing Security Manager...");
+            this.securityManager = new SecurityManager(peerId, displayName);
+            
+            // ⭐ BƯỚC 2: Tạo PeerInfo với public key
+            String publicKeyEncoded = securityManager.getPublicKeyEncoded();
+            this.localPeer = new PeerInfo(peerId, getLocalIPAddress(), tcpPort, displayName, publicKeyEncoded);
+            
+            System.out.println("✓ Đã tạo Peer cục bộ với khóa công khai");
+            System.out.println("  → Peer ID: " + peerId);
+            System.out.println("  → Tên hiển thị: " + displayName);
+            System.out.println("  → Khóa công khai: " + publicKeyEncoded.substring(0, 40) + "...");
 
-        // Khởi tạo các service
-        this.peerDiscovery = new PeerDiscovery(localPeer);
-        this.fileSearchService = new FileSearchService(localPeer, peerDiscovery);
-        this.fileTransferService = new FileTransferService(localPeer);
-        this.pinCodeService = new PINCodeService(localPeer, peerDiscovery);  // ← Khởi tạo PIN Service
+            // Khởi tạo các service (với SecurityManager)
+            this.peerDiscovery = new PeerDiscovery(localPeer, securityManager);
+            this.fileSearchService = new FileSearchService(localPeer, peerDiscovery, securityManager);
+            this.fileTransferService = new FileTransferService(localPeer, securityManager);
+            this.pinCodeService = new PINCodeService(localPeer, peerDiscovery, securityManager);
 
-        this.listeners = new CopyOnWriteArrayList<>();
+            this.listeners = new CopyOnWriteArrayList<>();
 
-        // Đăng ký listener cho peer discovery
-        setupPeerDiscoveryListener();
+            // Đăng ký listener cho peer discovery
+            setupPeerDiscoveryListener();
+            
+        } catch (Exception e) {
+            System.err.println("❌ Fatal error initializing P2PService: " + e.getMessage());
+            e.printStackTrace();
+            throw new RuntimeException("Failed to initialize P2PService", e);
+        }
     }
 
     /**
@@ -168,7 +197,7 @@ public class P2PService {
     }
 
     /**
-     * Bắt đầu tất cả các service P2P
+     * Bắt đầu tất cả các service P2P (với TLS + Peer Authentication)
      */
     public void start() throws IOException {
         if (running) {
@@ -176,49 +205,54 @@ public class P2PService {
             return;
         }
 
-        System.out.println("🚀 ========== KHỞI ĐỘNG P2P SERVICE ==========");
+        System.out.println("🚀 ========== KHỞI ĐỘNG P2P SERVICE (TLS + Auth) ==========");
         System.out.println("   Peer ID: " + localPeer.getPeerId());
         System.out.println("   Display Name: " + localPeer.getDisplayName());
         System.out.println("   IP Address: " + localPeer.getIpAddress());
         System.out.println("   TCP Port Request: " + localPeer.getPort() + " (will auto-assign)");
+        System.out.println("   Public Key: " + localPeer.getPublicKey().substring(0, 40) + "...");
+        System.out.println("   Security: TLS + ECDSA Signatures");
 
         try {
             // ⭐ BƯỚC 1: Start FileTransferService TRƯỚC để lấy port thực
-            System.out.println("\n[1/5] Khởi động FileTransferService...");
+            System.out.println("\n[1/5] Khởi động FileTransferService (TLS)...");
             fileTransferService.start();
 
             // Port giờ đã được set bởi FileTransferService
             int actualPort = localPeer.getPort();
-            System.out.println("✓ FileTransferService started on port: " + actualPort);
+            System.out.println("✓ FileTransferService (TLS) started on port: " + actualPort);
 
             // ⭐ BƯỚC 2: Start FileSearchService
-            System.out.println("\n[2/5] Khởi động FileSearchService...");
+            System.out.println("\n[2/5] Khởi động FileSearchService (TLS)...");
             fileSearchService.start();
-            System.out.println("✓ FileSearchService started");
+            System.out.println("✓ FileSearchService (TLS) started");
             
             // ⭐ BƯỚC 3: Start PINCodeService
-            System.out.println("\n[3/5] Khởi động PINCodeService...");
+            System.out.println("\n[3/5] Khởi động PINCodeService (TLS + Signatures)...");
             pinCodeService.start();
-            System.out.println("✓ PINCodeService started");
+            System.out.println("✓ PINCodeService (TLS + Signatures) started");
 
             // ⭐ BƯỚC 4: Start PeerDiscovery NHƯNG CHƯA GỬI JOIN
-            System.out.println("\n[4/5] Khởi động PeerDiscovery (không gửi JOIN)...");
+            System.out.println("\n[4/5] Khởi động PeerDiscovery (TLS + Signatures, listening mode)...");
             peerDiscovery.start(false);  // ← false = không gửi JOIN ngay
-            System.out.println("✓ PeerDiscovery started (listening mode)");
+            System.out.println("✓ PeerDiscovery (TLS + Signatures) started");
 
             // ⭐ BƯỚC 5: GIỜ MỚI GỬI JOIN (sau khi TẤT CẢ đã sẵn sàng)
-            System.out.println("\n[5/5] Gửi JOIN announcement...");
+            System.out.println("\n[5/5] Gửi signed JOIN announcement...");
             peerDiscovery.sendJoinAnnouncement();
 
             running = true;
 
-            System.out.println("\n✅ ========== P2P SERVICE READY ==========");
+            System.out.println("\n✅ ========== P2P SERVICE READY (SECURE) ==========");
             System.out.println("📌 Final Peer Info:");
             System.out.println("   - Display Name: " + localPeer.getDisplayName());
             System.out.println("   - IP Address: " + localPeer.getIpAddress());
             System.out.println("   - TCP Port: " + localPeer.getPort());
             System.out.println("   - Peer ID: " + localPeer.getPeerId());
-            System.out.println("===========================================\n");
+            System.out.println("   - Public Key: " + localPeer.getPublicKey().substring(0, 40) + "...");
+            System.out.println("   - TLS: Enabled ✅");
+            System.out.println("   - ECDSA Signatures: Enabled ✅");
+            System.out.println("==================================================\n");
 
             notifyServiceStarted();
 

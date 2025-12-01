@@ -2,20 +2,27 @@ package org.example.p2psharefile.service;
 
 import org.example.p2psharefile.model.*;
 import org.example.p2psharefile.network.PeerDiscovery;
+import org.example.p2psharefile.security.SecurityManager;
 
+import javax.net.ssl.*;
 import java.io.*;
 import java.net.*;
+import java.security.PublicKey;
 import java.util.*;
 import java.util.concurrent.*;
 
 /**
- * PINCodeService - Dịch vụ quản lý mã PIN chia sẻ file
+ * PINCodeService - Dịch vụ quản lý mã PIN chia sẻ file (với TLS + Signatures)
  * 
  * Giống Send Anywhere:
  * 1. User chọn file → Tạo mã PIN 6 số
- * 2. Chia sẻ PIN cho người khác
+ * 2. Chia sẻ PIN cho người khác (qua TLS channel)
  * 3. Người khác nhập PIN → Download file
  * 4. PIN hết hạn sau 10 phút
+ * 
+ * Security improvements:
+ * - PIN messages được ký bằng ECDSA để chống forgery
+ * - TLS encryption cho PIN transmission
  */
 public class PINCodeService {
     
@@ -25,10 +32,11 @@ public class PINCodeService {
     
     private final PeerInfo localPeer;
     private final PeerDiscovery peerDiscovery;
+    private final SecurityManager securityManager;
     private final Map<String, ShareSession> localSessions;  // PIN do mình tạo
     private final Map<String, ShareSession> globalSessions; // PIN từ tất cả peers
     
-    private ServerSocket pinServer;
+    private SSLServerSocket pinServer;
     private ExecutorService executorService;
     private volatile boolean running = false;
     
@@ -41,22 +49,23 @@ public class PINCodeService {
         void onPINReceived(ShareSession session);
     }
     
-    public PINCodeService(PeerInfo localPeer, PeerDiscovery peerDiscovery) {
+    public PINCodeService(PeerInfo localPeer, PeerDiscovery peerDiscovery, SecurityManager securityManager) {
         this.localPeer = localPeer;
         this.peerDiscovery = peerDiscovery;
+        this.securityManager = securityManager;
         this.localSessions = new ConcurrentHashMap<>();
         this.globalSessions = new ConcurrentHashMap<>();
         this.listeners = new CopyOnWriteArrayList<>();
     }
     
     /**
-     * Khởi động dịch vụ PIN
+     * Khởi động dịch vụ PIN (với TLS)
      */
     public void start() throws IOException {
         if (running) return;
         
         running = true;
-        pinServer = new ServerSocket(PIN_SERVER_PORT);
+        pinServer = securityManager.createSSLServerSocket(PIN_SERVER_PORT);
         executorService = Executors.newCachedThreadPool();
         
         // Thread lắng nghe PIN từ peer khác
@@ -65,7 +74,7 @@ public class PINCodeService {
         // Thread kiểm tra PIN hết hạn
         executorService.submit(this::checkExpiredPINs);
         
-        System.out.println("✓ PIN Code Service đã khởi động trên port " + PIN_SERVER_PORT);
+        System.out.println("✓ PIN Code Service (TLS) đã khởi động trên port " + PIN_SERVER_PORT);
     }
     
     /**
@@ -213,18 +222,27 @@ public class PINCodeService {
     }
     
     /**
-     * Xử lý PIN message từ peer khác
+     * Xử lý PIN message từ peer khác (với signature verification)
      */
     private void handlePINMessage(Socket socket) {
         try (ObjectInputStream ois = new ObjectInputStream(socket.getInputStream())) {
             
-            ShareSession session = (ShareSession) ois.readObject();
+            // Nhận SignedMessage
+            SignedMessage signedMsg = (SignedMessage) ois.readObject();
+            ShareSession session = (ShareSession) signedMsg.getPayload();
+            
+            // Verify signature
+            PeerInfo senderPeer = session.getOwnerPeer();
+            if (!verifyPINSignature(signedMsg, senderPeer)) {
+                System.err.println("❌ [Security] Invalid PIN signature from: " + senderPeer.getDisplayName());
+                return;
+            }
             
             // Lưu vào global sessions
             globalSessions.put(session.getPin(), session);
             
             System.out.println("📥 Nhận PIN: " + session.getPin() + 
-                             " từ " + session.getOwnerPeer().getDisplayName());
+                             " từ " + session.getOwnerPeer().getDisplayName() + " ✅ Verified");
             
             // Thông báo listeners
             notifyPINReceived(session);
@@ -272,19 +290,67 @@ public class PINCodeService {
     }
     
     /**
-     * Gửi PIN đến một peer cụ thể
+     * Gửi PIN đến một peer cụ thể (với TLS + signature)
      */
     public void sendPINToPeerTcp(ShareSession session, PeerInfo peer) {
-        try (Socket socket = new Socket(peer.getIpAddress(), PIN_SERVER_PORT);
-             ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream())) {
+        try {
+            SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), PIN_SERVER_PORT);
+            socket.connect(new InetSocketAddress(peer.getIpAddress(), PIN_SERVER_PORT), 3000);
+            socket.setSoTimeout(5000);
+            socket.startHandshake();
+            
+            try (ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream())) {
+                
+                // Tạo signed message
+                SignedMessage signedMsg = createSignedPINMessage(session);
+                
+                oos.writeObject(signedMsg);
+                oos.flush();
 
-            oos.writeObject(session);
-            oos.flush();
+                System.out.println("📤 Đã gửi PIN (signed) đến " + peer.getDisplayName());
 
-            System.out.println("📤 Đã gửi PIN đến " + peer.getDisplayName());
+            } finally {
+                socket.close();
+            }
 
         } catch (IOException e) {
             System.err.println("Lỗi khi gửi PIN: " + e.getMessage());
+        } catch (Exception e) {
+            System.err.println("❌ Lỗi tạo signed message: " + e.getMessage());
+        }
+    }
+    
+    // ========== Security Helper Methods ==========
+    
+    /**
+     * Tạo signed PIN message
+     */
+    private SignedMessage createSignedPINMessage(ShareSession session) throws Exception {
+        String message = "PIN:" + session.getPin() + ":" + session.getFileInfo().getFileName();
+        String signature = securityManager.signMessage(message);
+        return new SignedMessage("PIN", localPeer.getPeerId(), signature, session);
+    }
+    
+    /**
+     * Verify signature của PIN message
+     */
+    private boolean verifyPINSignature(SignedMessage signedMsg, PeerInfo senderPeer) {
+        try {
+            if (senderPeer.getPublicKey() == null) {
+                System.err.println("❌ [Security] Sender has no public key");
+                return false;
+            }
+            
+            PublicKey publicKey = SecurityManager.decodePublicKey(senderPeer.getPublicKey());
+            ShareSession session = (ShareSession) signedMsg.getPayload();
+            
+            String message = "PIN:" + session.getPin() + ":" + session.getFileInfo().getFileName();
+            
+            return securityManager.verifySignature(message, signedMsg.getSignature(), publicKey);
+            
+        } catch (Exception e) {
+            System.err.println("❌ [Security] Error verifying PIN signature: " + e.getMessage());
+            return false;
         }
     }
     

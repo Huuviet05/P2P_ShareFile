@@ -25,6 +25,18 @@
             <artifactId>javafx-fxml</artifactId>
             <version>21</version>
         </dependency>
+        
+        <!-- Bouncy Castle for certificate generation -->
+        <dependency>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcprov-jdk18on</artifactId>
+            <version>1.78.1</version>
+        </dependency>
+        <dependency>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcpkix-jdk18on</artifactId>
+            <version>1.78.1</version>
+        </dependency>
 
         <dependency>
             <groupId>org.junit.jupiter</groupId>
