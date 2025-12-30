@@ -1,0 +1,370 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<?import javafx.geometry.Insets?>
+<?import javafx.scene.control.*?>
+<?import javafx.scene.layout.*?>
+
+<BorderPane xmlns="http://javafx.com/javafx"
+            xmlns:fx="http://javafx.com/fxml"
+            fx:controller="org.example.p2psharefile.controller.MainController"
+            prefHeight="700.0" prefWidth="1050.0" minHeight="500.0" minWidth="750.0"
+            styleClass="root-pane">
+    
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- TOP: Header Bar -->
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <top>
+        <HBox alignment="CENTER_LEFT" spacing="0" styleClass="header-bar">
+            
+            <!-- Logo & App Name -->
+            <HBox spacing="12" alignment="CENTER_LEFT">
+                <StackPane styleClass="logo-container">
+                    <Label text="P" styleClass="logo-icon"/>
+                </StackPane>
+                <VBox spacing="2" alignment="CENTER_LEFT">
+                    <Label text="P2P ShareFile" styleClass="app-title"/>
+                    <Label fx:id="peerNameLabel" text="" styleClass="peer-name-label"/>
+                </VBox>
+            </HBox>
+            
+            <Region HBox.hgrow="ALWAYS"/>
+            
+            <!-- Connection Mode Toggle -->
+            <HBox spacing="8" alignment="CENTER" styleClass="mode-toggle-box">
+                <Label text="🔒" styleClass="mode-icon"/>
+                <ToggleButton fx:id="p2pModeToggle" text="LAN" styleClass="mode-toggle-btn" selected="true"/>
+                <ToggleButton fx:id="relayModeToggle" text="Internet" styleClass="mode-toggle-btn"/>
+            </HBox>
+            
+            <!-- Status Pills -->
+            <HBox spacing="10" alignment="CENTER_RIGHT">
+                <HBox spacing="6" alignment="CENTER" styleClass="status-pill">
+                    <Label text="●" fx:id="statusDot" styleClass="status-dot-offline"/>
+                    <Label fx:id="statusLabel" text="Offline" styleClass="status-text"/>
+                </HBox>
+                
+                <HBox spacing="4" alignment="CENTER" styleClass="info-pill">
+                    <Label fx:id="peerCountLabel" text="0" styleClass="info-text"/>
+                    <Label text="peers" styleClass="info-text"/>
+                </HBox>
+                
+                <HBox spacing="4" alignment="CENTER" styleClass="info-pill">
+                    <Label fx:id="sharedFileCountLabel" text="0" styleClass="info-text"/>
+                    <Label text="files" styleClass="info-text"/>
+                </HBox>
+            </HBox>
+        </HBox>
+    </top>
+    
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- CENTER: Sidebar + Content -->
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <center>
+        <HBox spacing="0" HBox.hgrow="ALWAYS">
+            
+            <TabPane fx:id="mainTabPane" tabClosingPolicy="UNAVAILABLE" 
+                     side="LEFT" styleClass="modern-tab-pane" HBox.hgrow="ALWAYS">
+                
+                <!-- ═══════════════════════════════════════════════════════════════ -->
+                <!-- TAB 1: CODE - 2 CỘT ĐỐI XỨNG -->
+                <!-- ═══════════════════════════════════════════════════════════════ -->
+                <Tab>
+                    <graphic>
+                        <VBox alignment="CENTER" spacing="4" styleClass="tab-graphic">
+                            <Label text="⚡" style="-fx-font-size: 24;"/>
+                            <Label text="Code" styleClass="tab-label-text"/>
+                        </VBox>
+                    </graphic>
+                    <ScrollPane fitToWidth="true" fitToHeight="true" styleClass="content-scroll">
+                        <HBox spacing="24" styleClass="content-area" alignment="TOP_CENTER">
+                            <padding>
+                                <Insets top="20" right="30" bottom="20" left="30"/>
+                            </padding>
+                            
+                            <!-- ══════════════ GỬI FILE (CARD BÊN TRÁI) ══════════════ -->
+                            <VBox spacing="20" HBox.hgrow="ALWAYS" styleClass="card pin-card" 
+                                  maxWidth="520" minWidth="420" prefWidth="520">
+                                
+                                <!-- Header + Stepper -->
+                                <VBox spacing="12">
+                                    <Label text="Gửi file" styleClass="card-title-large"/>
+                                    <Label text="Tạo PIN chia sẻ nhanh" styleClass="card-subtitle"/>
+                                    <HBox styleClass="stepper" spacing="8" alignment="CENTER_LEFT">
+                                        <Label text="❶" styleClass="stepper-item"/>
+                                        <Label text="Chọn file" styleClass="stepper-text"/>
+                                        <Label text="›" styleClass="stepper-sep"/>
+                                        <Label text="❷" styleClass="stepper-item"/>
+                                        <Label text="Nhận PIN" styleClass="stepper-text"/>
+                                        <Label text="›" styleClass="stepper-sep"/>
+                                        <Label text="❸" styleClass="stepper-item"/>
+                                        <Label text="Chia sẻ" styleClass="stepper-text"/>
+                                    </HBox>
+                                </VBox>
+                                
+                                <!-- Dropzone (chưa chọn file) -->
+                                <VBox fx:id="pinSelectPanel" spacing="16" alignment="CENTER" 
+                                      VBox.vgrow="ALWAYS" styleClass="dropzone">
+                                    <Label text="📁" styleClass="dropzone-icon"/>
+                                    <VBox spacing="4" alignment="CENTER">
+                                        <Label text="Kéo thả file vào đây" styleClass="dropzone-title"/>
+                                        <Label text="hoặc" styleClass="dropzone-or"/>
+                                        <Button text="Chọn File" onAction="#handleSelectFileForPIN" 
+                                                styleClass="btn-secondary" prefWidth="140"/>
+                                    </VBox>
+                                </VBox>
+                                
+                                <!-- Khi đã chọn file -->
+                                <VBox fx:id="pinDisplayPanel" visible="false" spacing="18" 
+                                      VBox.vgrow="ALWAYS" alignment="TOP_CENTER">
+                                    
+                                    <!-- File chip -->
+                                    <HBox fx:id="fileChipBox" spacing="12" alignment="CENTER_LEFT" styleClass="file-chip">
+                                        <Label text="📄" style="-fx-font-size: 20;"/>
+                                        <VBox spacing="2" HBox.hgrow="ALWAYS">
+                                            <Label fx:id="pinFileNameLabel" text="filename.docx" styleClass="file-chip-name"/>
+                                            <Label fx:id="fileChipSize" text="2.5 MB" styleClass="file-chip-size"/>
+                                        </VBox>
+                                        <Button text="Đổi file" onAction="#handleSelectFileForPIN" 
+                                                styleClass="btn-chip-action"/>
+                                    </HBox>
+                                    
+                                    <!-- PIN 6 ô + Copy + Timer -->
+                                    <VBox spacing="12" alignment="CENTER">
+                                        <Label text="MÃ PIN" styleClass="pin-section-title"/>
+                                        <HBox spacing="8" alignment="CENTER">
+                                            <HBox fx:id="pinDigitsBox" spacing="6" styleClass="pin-digits-container">
+                                                <Label fx:id="pinLabel" text="0 0 0 0 0 0" styleClass="pin-digits-separated"/>
+                                            </HBox>
+                                            <Button fx:id="btnCopyPin" text="📋" styleClass="btn-icon-copy" 
+                                                    onAction="#handleCopyPIN"/>
+                                        </HBox>
+                                        <HBox spacing="6" alignment="CENTER">
+                                            <Label text="Hết hạn sau" styleClass="pin-timer-label"/>
+                                            <Label fx:id="pinExpiryLabel" text="09:58" styleClass="pin-timer"/>
+                                        </HBox>
+                                    </VBox>
+                                    
+                                    <!-- CTA + Status -->
+                                    <VBox spacing="10" alignment="CENTER">
+                                        <Button fx:id="btnSharePin" text="Chia sẻ PIN" 
+                                                styleClass="btn-primary-large" prefWidth="200"/>
+                                        <Label text="Mã PIN sẽ tự hủy khi hết thời gian" styleClass="status-hint"/>
+                                        <Button text="Hủy chia sẻ" onAction="#handleCancelPIN" 
+                                                styleClass="btn-link"/>
+                                    </VBox>
+                                </VBox>
+                            </VBox>
+                            
+                            <!-- ══════════════ NHẬN FILE (CARD BÊN PHẢI) ══════════════ -->
+                            <VBox spacing="20" HBox.hgrow="ALWAYS" styleClass="card pin-card" 
+                                  maxWidth="520" minWidth="420" prefWidth="520">
+                                
+                                <!-- Header + Stepper -->
+                                <VBox spacing="12">
+                                    <Label text="Nhận file" styleClass="card-title-large"/>
+                                    <Label text="Nhập PIN để tải về" styleClass="card-subtitle"/>
+                                    <HBox styleClass="stepper" spacing="8" alignment="CENTER_LEFT">
+                                        <Label text="❶" styleClass="stepper-item"/>
+                                        <Label text="Nhận PIN" styleClass="stepper-text"/>
+                                        <Label text="›" styleClass="stepper-sep"/>
+                                        <Label text="❷" styleClass="stepper-item"/>
+                                        <Label text="Nhập mã" styleClass="stepper-text"/>
+                                        <Label text="›" styleClass="stepper-sep"/>
+                                        <Label text="❸" styleClass="stepper-item"/>
+                                        <Label text="Tải về" styleClass="stepper-text"/>
+                                    </HBox>
+                                </VBox>
+                                
+                                <!-- 6 ô PIN input -->
+                                <VBox spacing="16" alignment="CENTER" VBox.vgrow="ALWAYS">
+                                    <Label text="NHẬP MÃ PIN" styleClass="pin-section-title"/>
+                                    <TextField fx:id="pinInputField" promptText="0  0  0  0  0  0" 
+                                              alignment="CENTER" styleClass="pin-input-separated" 
+                                              maxWidth="320" prefWidth="320"/>
+                                    
+                                    <!-- Nơi lưu file -->
+                                    <HBox spacing="8" alignment="CENTER" styleClass="save-location-box">
+                                        <Label text="📂" style="-fx-font-size: 16;"/>
+                                        <Label text="Lưu vào:" styleClass="save-label"/>
+                                        <Label fx:id="saveLocationLabel" text="Downloads" styleClass="save-path"/>
+                                        <Button text="Đổi" styleClass="btn-chip-action" 
+                                                onAction="#handleChangeSaveLocation"/>
+                                    </HBox>
+                                    
+                                    <!-- Progress (ẩn mặc định) -->
+                                    <VBox fx:id="receiveProgressBox" visible="false" spacing="8" 
+                                          styleClass="progress-box">
+                                        <ProgressBar fx:id="receiveProgressBar" prefWidth="300" 
+                                                    styleClass="modern-progress"/>
+                                        <HBox spacing="10" alignment="CENTER">
+                                            <Label fx:id="receiveSpeedLabel" text="0 MB/s" styleClass="progress-text"/>
+                                            <Label text="•" styleClass="progress-sep"/>
+                                            <Label fx:id="receiveEtaLabel" text="00:00" styleClass="progress-text"/>
+                                        </HBox>
+                                    </VBox>
+                                </VBox>
+                                
+                                <!-- CTA -->
+                                <VBox spacing="10" alignment="CENTER">
+                                    <Button fx:id="receiveButton" text="Nhận File" 
+                                            onAction="#handleReceiveByPIN" 
+                                            styleClass="btn-success-large" prefWidth="200"/>
+                                    <Label text="Nhập đầy đủ 6 số để tải file" styleClass="status-hint"/>
+                                </VBox>
+                            </VBox>
+                            
+                        </HBox>
+                    </ScrollPane>
+                </Tab>
+                
+                <!-- ═══════════════════════════════════════════════════════════════ -->
+                <!-- TAB 2: FILE - TOOLBAR + 2 CỘT -->
+                <!-- ═══════════════════════════════════════════════════════════════ -->
+                <Tab>
+                    <graphic>
+                        <VBox alignment="CENTER" spacing="4" styleClass="tab-graphic">
+                            <Label text="📁" style="-fx-font-size: 24;"/>
+                            <Label text="File" styleClass="tab-label-text"/>
+                        </VBox>
+                    </graphic>
+                    <VBox styleClass="tab-content">
+                        <!-- Toolbar -->
+                        <HBox spacing="12" alignment="CENTER_LEFT" styleClass="toolbar">
+                            <Button fx:id="addFileButton" text="➕ Thêm file" onAction="#handleAddFile"
+                                    styleClass="btn-primary"/>
+                            <Button fx:id="addDirectoryButton" text="📁 Thêm thư mục" onAction="#handleAddDirectory"
+                                    styleClass="btn-secondary"/>
+                            <Button fx:id="removeSharedButton" text="✕ Gỡ khỏi chia sẻ" disable="true"
+                                    styleClass="btn-danger-outline"/>
+                            <Region HBox.hgrow="ALWAYS"/>
+                            <TextField fx:id="sharedSearchField" promptText="Tìm trong danh sách..." 
+                                      prefWidth="220" styleClass="search-toolbar"/>
+                        </HBox>
+                        
+                        <!-- 2 cột: 70% Table + 30% Peers -->
+                        <HBox spacing="16" HBox.hgrow="ALWAYS" VBox.vgrow="ALWAYS" styleClass="content-area-split">
+                            
+                            <!-- Cột trái: Table đang chia sẻ -->
+                            <VBox spacing="12" HBox.hgrow="ALWAYS" styleClass="card table-card">
+                                <Label text="Đang chia sẻ" styleClass="card-title"/>
+                                <ListView fx:id="sharedFilesListView" VBox.vgrow="ALWAYS" 
+                                         styleClass="modern-list files-table"/>
+                                <Label fx:id="sharedFilesEmptyLabel" text="Chưa có file chia sẻ. Nhấn 'Thêm file' để bắt đầu" 
+                                       styleClass="empty-state" visible="false"/>
+                            </VBox>
+                            
+                            <!-- Cột phải: Peers card -->
+                            <VBox spacing="12" prefWidth="300" styleClass="card peers-card">
+                                <HBox spacing="8" alignment="CENTER_LEFT">
+                                    <Label text="Peers online" styleClass="card-title"/>
+                                    <Region HBox.hgrow="ALWAYS"/>
+                                    <Label fx:id="peersCountBadge" text="0" styleClass="count-badge"/>
+                                </HBox>
+                                <ListView fx:id="peerListView" VBox.vgrow="ALWAYS" 
+                                         styleClass="modern-list peers-list"/>
+                                <Label text="Tự động cập nhật mỗi 30s" styleClass="hint-text-small"/>
+                            </VBox>
+                            
+                        </HBox>
+                    </VBox>
+                </Tab>
+                
+                <!-- ═══════════════════════════════════════════════════════════════ -->
+                <!-- TAB 3: TÌM - SEARCH BAR + TABLE + STATUS -->
+                <!-- ═══════════════════════════════════════════════════════════════ -->
+                <Tab>
+                    <graphic>
+                        <VBox alignment="CENTER" spacing="4" styleClass="tab-graphic">
+                            <Label text="🔍" style="-fx-font-size: 24;"/>
+                            <Label text="Tìm" styleClass="tab-label-text"/>
+                        </VBox>
+                    </graphic>
+                    <VBox styleClass="tab-content">
+                        <!-- Search bar + Filters -->
+                        <HBox spacing="12" alignment="CENTER" styleClass="search-header">
+                            <TextField fx:id="searchField" promptText="Nhập tên file..." 
+                                      HBox.hgrow="ALWAYS" styleClass="search-input-main"/>
+                            <Button fx:id="searchButton" text="🔍 Tìm kiếm" onAction="#handleSearch"
+                                    styleClass="btn-primary" prefWidth="120"/>
+                            <Separator orientation="VERTICAL"/>
+                            <Label text="Lọc:" styleClass="filter-label"/>
+                            <Button text="Tất cả peers" styleClass="filter-chip"/>
+                            <Button text="Tất cả loại" styleClass="filter-chip"/>
+                        </HBox>
+                        
+                        <!-- Results table -->
+                        <VBox spacing="12" VBox.vgrow="ALWAYS" styleClass="content-area">
+                            <HBox spacing="10" alignment="CENTER_LEFT" styleClass="table-header">
+                                <Label text="Kết quả tìm kiếm" styleClass="card-title"/>
+                                <Region HBox.hgrow="ALWAYS"/>
+                                <Label fx:id="searchStatusLabel" text="Sẵn sàng tìm kiếm" 
+                                       styleClass="search-status"/>
+                            </HBox>
+                            
+                            <ListView fx:id="searchResultsListView" VBox.vgrow="ALWAYS" 
+                                     styleClass="modern-list search-results-table"/>
+                            
+                            <Label fx:id="searchEmptyLabel" text="Nhập tên file và nhấn Enter để tìm" 
+                                   styleClass="empty-state-center" visible="false"/>
+                            <Label fx:id="searchNoResultLabel" text="Không tìm thấy file phù hợp. Thử tên ngắn hơn" 
+                                   styleClass="empty-state-center" visible="false"/>
+                            
+                            <!-- Action buttons (ẩn mặc định, hiện khi chọn row) -->
+                            <HBox spacing="10" alignment="CENTER" styleClass="table-actions" 
+                                  fx:id="searchActionsBox" visible="false">
+                                <Button fx:id="previewButton" text="👁 Xem trước" onAction="#handlePreview"
+                                        styleClass="btn-ghost"/>
+                                <Button fx:id="downloadButton" text="⬇ Tải về" onAction="#handleDownload"
+                                        styleClass="btn-primary"/>
+                                <Button fx:id="pauseDownloadButton" text="⏸ Tạm dừng" onAction="#handlePauseDownload"
+                                        styleClass="btn-warning" visible="false" managed="false"/>
+                                <Button fx:id="resumeDownloadButton" text="▶ Tiếp tục" onAction="#handleResumeDownload"
+                                        styleClass="btn-success" visible="false" managed="false"/>
+                                <Button fx:id="cancelDownloadButton" text="✕ Hủy" onAction="#handleCancelDownload"
+                                        styleClass="btn-danger" visible="false" managed="false"/>
+                            </HBox>
+                            
+                            <!-- Download progress bar -->
+                            <VBox fx:id="downloadProgressBox" spacing="5" visible="false" managed="false" 
+                                  styleClass="download-progress-container">
+                                <HBox spacing="10" alignment="CENTER_LEFT">
+                                    <Label fx:id="downloadFileNameLabel" text="" styleClass="download-filename"/>
+                                    <Region HBox.hgrow="ALWAYS"/>
+                                    <Label fx:id="downloadSpeedLabel" text="" styleClass="download-speed"/>
+                                </HBox>
+                                <ProgressBar fx:id="downloadProgressBar" progress="0" maxWidth="Infinity" 
+                                            styleClass="download-progress"/>
+                                <HBox spacing="10" alignment="CENTER">
+                                    <Label fx:id="downloadPercentLabel" text="0%" styleClass="download-percent"/>
+                                    <Label fx:id="downloadSizeLabel" text="" styleClass="download-size"/>
+                                    <Region HBox.hgrow="ALWAYS"/>
+                                    <Label fx:id="downloadTimeLabel" text="" styleClass="download-time"/>
+                                </HBox>
+                            </VBox>
+                        </VBox>
+                        
+                        <!-- Status bar -->
+                        <HBox spacing="12" alignment="CENTER" styleClass="status-bar">
+                            <Label fx:id="searchProgressLabel" text="" styleClass="status-text"/>
+                            <ProgressIndicator fx:id="searchProgressIndicator" visible="false" 
+                                             styleClass="small-spinner"/>
+                            <Region HBox.hgrow="ALWAYS"/>
+                            <Label fx:id="searchResultCountLabel" text="" styleClass="result-count"/>
+                        </HBox>
+                    </VBox>
+                </Tab>
+                
+            </TabPane>
+        </HBox>
+    </center>
+    
+    <!-- Small footer bar (same color as header) -->
+    <bottom>
+        <HBox styleClass="footer-bar" alignment="CENTER_LEFT">
+            <HBox spacing="8" alignment="CENTER_LEFT" HBox.hgrow="ALWAYS">
+                <Label text="" styleClass="footer-text"/>
+            </HBox>
+        </HBox>
+    </bottom>
+    
+</BorderPane>
