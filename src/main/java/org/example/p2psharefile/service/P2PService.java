@@ -9,6 +9,9 @@ import java.io.File;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * P2PService - Service chính quản lý toàn bộ ứng dụng P2P (với TLS + Peer Authentication)
@@ -17,7 +20,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * - Security Manager (Keypair + TLS)
  * - Peer Discovery (TLS + Signatures)
  * - File Search (TLS)
- * - File Transfer (TLS + AES)
+ * - File Transfer (TLS + AES) - Hỗ trợ cả stream và chunked
+ * - Chunked File Transfer (TLS + AES + Resume)
  * - PIN Code Service (TLS + Signatures)
  *
  * UI chỉ cần gọi P2PService, không cần biết chi tiết các module bên trong
@@ -35,13 +39,21 @@ public class P2PService {
     private final PeerDiscovery peerDiscovery;
     private final FileSearchService fileSearchService;
     private final FileTransferService fileTransferService;
+    private final ChunkedFileTransferService chunkedTransferService;
     private final PINCodeService pinCodeService;
     
     // UltraView Preview Services
     private final PreviewCacheService previewCacheService;
     private final PreviewService previewService;
+    
+    // Signaling Client cho P2P Hybrid (Internet)
+    private SignalingClient signalingClient;
+    private ScheduledExecutorService signalingRefreshExecutor;
 
     private final List<P2PServiceListener> listeners;
+    
+    // Transfer mode: true = chunked (mặc định), false = stream
+    private boolean useChunkedTransfer = true;
 
     /**
      * Interface để UI nhận thông báo từ P2P Service
@@ -72,7 +84,7 @@ public class P2PService {
             String peerId = UUID.randomUUID().toString();
             
             // ⭐ BƯỚC 1: Khởi tạo SecurityManager TRƯỚC (để có keypair)
-            System.out.println("🔐 Initializing Security Manager...");
+            System.out.println("🔐 Đang khởi tạo SecurityManager...");
             this.securityManager = new SecurityManager(peerId, displayName);
             
             // ⭐ BƯỚC 2: Tạo PeerInfo với public key
@@ -88,11 +100,16 @@ public class P2PService {
             this.peerDiscovery = new PeerDiscovery(localPeer, securityManager);
             this.fileSearchService = new FileSearchService(localPeer, peerDiscovery, securityManager);
             this.fileTransferService = new FileTransferService(localPeer, securityManager);
+            this.chunkedTransferService = new ChunkedFileTransferService(localPeer, securityManager);
             this.pinCodeService = new PINCodeService(localPeer, peerDiscovery, securityManager);
             
             // UltraView: Khởi tạo preview services
             this.previewCacheService = new PreviewCacheService(peerId, securityManager);
             this.previewService = new PreviewService(localPeer, securityManager, previewCacheService);
+            
+            // Signaling Client: Khởi tạo cho P2P Hybrid (Internet)
+            this.signalingClient = new SignalingClient(localPeer, securityManager, peerDiscovery);
+            setupSignalingListener();
 
             this.listeners = new CopyOnWriteArrayList<>();
 
@@ -100,9 +117,9 @@ public class P2PService {
             setupPeerDiscoveryListener();
             
         } catch (Exception e) {
-            System.err.println("❌ Fatal error initializing P2PService: " + e.getMessage());
+            System.err.println("❌ Lỗi nghiêm trọng khi khởi tạo P2PService: " + e.getMessage());
             e.printStackTrace();
-            throw new RuntimeException("Failed to initialize P2PService", e);
+            throw new RuntimeException("Không thể khởi tạo P2PService", e);
         }
     }
 
@@ -206,34 +223,32 @@ public class P2PService {
     }
     
     /**
-     * Bật relay với cấu hình
-     * Gọi trước khi start() để enable relay fallback
-     * 
-     * @param config Cấu hình relay server
+     * Setup listener cho Signaling Client
      */
-    public void enableRelay(RelayConfig config) {
-        fileTransferService.enableRelay(config);
-        
-        // Set RelayClient cho FileSearchService để tự động upload file khi share
-        if (fileTransferService.getRelayClient() != null) {
-            fileSearchService.setRelayClient(fileTransferService.getRelayClient());
+    private void setupSignalingListener() {
+        signalingClient.addListener(new SignalingClient.SignalingListener() {
+            @Override
+            public void onConnected() {
+                System.out.println("✅ Đã kết nối Signaling Server thành công!");
+            }
             
-            // Set RelayClient cho PINCodeService để sync PIN qua Internet
-            pinCodeService.setRelayClient(fileTransferService.getRelayClient());
-        }
-        
-        System.out.println("✓ Relay đã được bật: " + config.getServerUrl());
-        System.out.println("  • Prefer P2P: " + config.isPreferP2P());
-        System.out.println("  • P2P Timeout: " + config.getP2pTimeoutMs() + "ms");
-        System.out.println("  • Force Relay: " + config.isForceRelay());
+            @Override
+            public void onDisconnected() {
+                System.out.println("⚠ Mất kết nối với Signaling Server");
+            }
+            
+            @Override
+            public void onPeerListUpdated(List<PeerInfo> peers) {
+                System.out.println("📋 Cập nhật danh sách " + peers.size() + " peer(s) từ Internet");
+            }
+            
+            @Override
+            public void onError(String message) {
+                System.err.println("❌ Lỗi Signaling: " + message);
+            }
+        });
     }
-    
-    /**
-     * Kiểm tra relay có được bật không
-     */
-    public boolean isRelayEnabled() {
-        return fileTransferService.isRelayEnabled();
-    }
+
 
     /**
      * Bắt đầu tất cả các service P2P (với TLS + Peer Authentication)
@@ -246,73 +261,66 @@ public class P2PService {
 
         System.out.println("🚀 ========== KHỞI ĐỘNG P2P SERVICE (TLS + Auth) ==========");
         System.out.println("   Peer ID: " + localPeer.getPeerId());
-        System.out.println("   Display Name: " + localPeer.getDisplayName());
-        System.out.println("   IP Address: " + localPeer.getIpAddress());
-        System.out.println("   TCP Port Request: " + localPeer.getPort() + " (will auto-assign)");
-        System.out.println("   Public Key: " + localPeer.getPublicKey().substring(0, 40) + "...");
-        System.out.println("   Security: TLS + ECDSA Signatures");
+        System.out.println("   Tên hiển thị: " + localPeer.getDisplayName());
+        System.out.println("   Địa chỉ IP: " + localPeer.getIpAddress());
+        System.out.println("   Port TCP yêu cầu: " + localPeer.getPort() + " (tự động gán)");
+        System.out.println("   Khóa công khai: " + localPeer.getPublicKey().substring(0, 40) + "...");
+        System.out.println("   Bảo mật: TLS + ECDSA Signatures");
+        System.out.println("   Transfer Mode: " + (useChunkedTransfer ? "Chunked (Resume supported)" : "Stream"));
 
         try {
             // ⭐ BƯỚC 1: Start FileTransferService TRƯỚC để lấy port thực
-            System.out.println("\n[1/5] Khởi động FileTransferService (TLS)...");
+            System.out.println("\n[1/6] Khởi động FileTransferService (TLS)...");
             fileTransferService.start();
 
             // Port giờ đã được set bởi FileTransferService
             int actualPort = localPeer.getPort();
-            System.out.println("✓ FileTransferService (TLS) started on port: " + actualPort);
+            System.out.println("✓ FileTransferService (TLS) đã khởi động trên port: " + actualPort);
+            
+            // ⭐ BƯỚC 1.5: Start ChunkedFileTransferService
+            System.out.println("\n[1.5/6] Khởi động ChunkedFileTransferService (TLS + Resume)...");
+            chunkedTransferService.start();
+            System.out.println("✓ ChunkedFileTransferService đã khởi động (Chunk size: " + 
+                TransferState.DEFAULT_CHUNK_SIZE / 1024 + "KB)");
 
             // ⭐ BƯỚC 2: Start FileSearchService
-            System.out.println("\n[2/5] Khởi động FileSearchService (TLS)...");
+            System.out.println("\n[2/6] Khởi động FileSearchService (TLS)...");
             fileSearchService.start();
-            System.out.println("✓ FileSearchService (TLS) started");
+            System.out.println("✓ FileSearchService (TLS) đã khởi động");
             
             // ⭐ BƯỚC 3: Start PINCodeService
             System.out.println("\n[3/6] Khởi động PINCodeService (TLS + Signatures)...");
             pinCodeService.start();
-            System.out.println("✓ PINCodeService (TLS + Signatures) started");
+            System.out.println("✓ PINCodeService (TLS + Signatures) đã khởi động");
             
             // ⭐ BƯỚC 3.5: Start PreviewService (UltraView)
             System.out.println("\n[3.5/6] Khởi động PreviewService (UltraView)...");
             previewService.start();
-            System.out.println("✓ PreviewService started on port: " + previewService.getPreviewPort());
+            System.out.println("✓ PreviewService đã khởi động trên port: " + previewService.getPreviewPort());
 
             // ⭐ BƯỚC 4: Start PeerDiscovery NHƯNG CHƯA GỬI JOIN
-            System.out.println("\n[4/6] Khởi động PeerDiscovery (TLS + Signatures, listening mode)...");
+            System.out.println("\n[4/6] Khởi động PeerDiscovery (TLS + Signatures, chế độ lắng nghe)...");
             peerDiscovery.start(false);  // ← false = không gửi JOIN ngay
-            System.out.println("✓ PeerDiscovery (TLS + Signatures) started");
+            System.out.println("✓ PeerDiscovery (TLS + Signatures) đã khởi động");
 
             // ⭐ BƯỚC 5: GIỜ MỚI GỬI JOIN (sau khi TẤT CẢ đã sẵn sàng)
             System.out.println("\n[5/6] Gửi signed JOIN announcement...");
             peerDiscovery.sendJoinAnnouncement();
-            
-            // ⭐ BƯỚC 6: Đăng ký với relay server (chỉ đăng ký, KHÔNG discover peers ngay)
-            // Việc discover peers qua relay sẽ được thực hiện khi chuyển sang Relay mode
-            if (fileTransferService.isRelayEnabled()) {
-                System.out.println("\n[6/6] Đăng ký peer với relay server...");
-                RelayClient relayClient = fileTransferService.getRelayClient();
-                if (relayClient != null) {
-                    boolean registered = relayClient.registerPeer(localPeer);
-                    if (registered) {
-                        System.out.println("✓ Đã đăng ký với relay server (sẵn sàng cho Relay mode)");
-                        // Heartbeat định kỳ để duy trì kết nối
-                        startRelayHeartbeat(relayClient);
-                    }
-                }
-            }
 
             running = true;
 
-            System.out.println("\n✅ ========== P2P SERVICE READY (SECURE + ULTRAVIEW) ==========");
-            System.out.println("📌 Final Peer Info:");
-            System.out.println("   - Display Name: " + localPeer.getDisplayName());
-            System.out.println("   - IP Address: " + localPeer.getIpAddress());
-            System.out.println("   - TCP Port: " + localPeer.getPort());
-            System.out.println("   - Preview Port: " + previewService.getPreviewPort());
+            System.out.println("\n✅ ========== P2P SERVICE SẴN SÀNG (BẢO MẬT + ULTRAVIEW) ==========");
+            System.out.println("📌 Thông tin Peer cuối cùng:");
+            System.out.println("   - Tên hiển thị: " + localPeer.getDisplayName());
+            System.out.println("   - Địa chỉ IP: " + localPeer.getIpAddress());
+            System.out.println("   - Port TCP: " + localPeer.getPort());
+            System.out.println("   - Port Preview: " + previewService.getPreviewPort());
             System.out.println("   - Peer ID: " + localPeer.getPeerId());
-            System.out.println("   - Public Key: " + localPeer.getPublicKey().substring(0, 40) + "...");
-            System.out.println("   - TLS: Enabled ✅");
-            System.out.println("   - ECDSA Signatures: Enabled ✅");
-            System.out.println("   - UltraView Preview: Enabled ✅");
+            System.out.println("   - Khóa công khai: " + localPeer.getPublicKey().substring(0, 40) + "...");
+            System.out.println("   - TLS: Đã bật ✅");
+            System.out.println("   - ECDSA Signatures: Đã bật ✅");
+            System.out.println("   - UltraView Preview: Đã bật ✅");
+            System.out.println("   - Chunked Transfer: " + (useChunkedTransfer ? "Đã bật ✅" : "Tắt"));
             System.out.println("==================================================\n");
 
             notifyServiceStarted();
@@ -332,10 +340,17 @@ public class P2PService {
         if (!running) return;
 
         System.out.println("🛑 Đang dừng P2P Service...");
+        
+        // Dừng Signaling Client (nếu đang kết nối)
+        if (signalingClient != null && signalingClient.isConnected()) {
+            signalingClient.disconnect();
+        }
+        stopSignalingRefresh();
 
         pinCodeService.stop();
         previewService.stop();  // UltraView
         fileTransferService.stop();
+        chunkedTransferService.stop();  // Chunked transfer
         fileSearchService.stop();
         peerDiscovery.stop();
 
@@ -471,13 +486,84 @@ public class P2PService {
     }
 
     /**
-     * Download file từ peer
+     * Download file từ peer (sử dụng chunked transfer mặc định)
      *
      * @param peer Peer có file
      * @param fileInfo Thông tin file cần download
      * @param saveDirectory Thư mục lưu file
      */
     public void downloadFile(PeerInfo peer, FileInfo fileInfo, String saveDirectory) {
+        if (!running) {
+            System.err.println("❌ P2P Service chưa khởi động");
+            return;
+        }
+
+        if (useChunkedTransfer) {
+            // Sử dụng chunked transfer (hỗ trợ resume)
+            downloadFileChunked(peer, fileInfo, saveDirectory, null);
+        } else {
+            // Sử dụng stream transfer (legacy)
+            downloadFileStream(peer, fileInfo, saveDirectory);
+        }
+    }
+    
+    /**
+     * Download file sử dụng chunked transfer (hỗ trợ resume)
+     */
+    public TransferState downloadFileChunked(PeerInfo peer, FileInfo fileInfo, 
+                                             String saveDirectory, 
+                                             ChunkedFileTransferService.ChunkedTransferListener listener) {
+        if (!running) {
+            System.err.println("❌ P2P Service chưa khởi động");
+            return null;
+        }
+        
+        System.out.println("📥 Bắt đầu chunked download: " + fileInfo.getFileName());
+        
+        // Tạo listener wrapper để notify listeners
+        ChunkedFileTransferService.ChunkedTransferListener wrapperListener = 
+            new ChunkedFileTransferService.ChunkedTransferListener() {
+                @Override
+                public void onProgress(TransferState state) {
+                    notifyTransferProgress(state.getFileName(), state.getBytesTransferred(), state.getFileSize());
+                    if (listener != null) listener.onProgress(state);
+                }
+                
+                @Override
+                public void onChunkReceived(TransferState state, int chunkIndex) {
+                    if (listener != null) listener.onChunkReceived(state, chunkIndex);
+                }
+                
+                @Override
+                public void onComplete(TransferState state, File file) {
+                    notifyTransferComplete(state.getFileName(), file);
+                    if (listener != null) listener.onComplete(state, file);
+                }
+                
+                @Override
+                public void onError(TransferState state, Exception e) {
+                    notifyTransferError(state.getFileName(), e);
+                    if (listener != null) listener.onError(state, e);
+                }
+                
+                @Override
+                public void onPaused(TransferState state) {
+                    if (listener != null) listener.onPaused(state);
+                }
+                
+                @Override
+                public void onResumed(TransferState state) {
+                    if (listener != null) listener.onResumed(state);
+                }
+            };
+        
+        return chunkedTransferService.downloadFile(peer, fileInfo, saveDirectory, wrapperListener);
+    }
+    
+    /**
+     * Download file sử dụng stream transfer (legacy - không hỗ trợ resume)
+     */
+    public void downloadFileStream(PeerInfo peer, FileInfo fileInfo, String saveDirectory) {
         if (!running) {
             System.err.println("❌ P2P Service chưa khởi động");
             return;
@@ -502,18 +588,51 @@ public class P2PService {
                     public void onError(Exception e) {
                         notifyTransferError(fileInfo.getFileName(), e);
                     }
-                    
-                    @Override
-                    public void onP2PFailed(String reason) {
-                        System.out.println("⚠️  P2P failed: " + reason + ", switching to relay...");
-                    }
-                    
-                    @Override
-                    public void onRelayFallback(String transferId) {
-                        System.out.println("🌐 Using relay transfer: " + transferId);
-                    }
                 }
         );
+    }
+    
+    /**
+     * Tạm dừng download chunked
+     */
+    public void pauseChunkedTransfer(String transferId) {
+        chunkedTransferService.pauseTransfer(transferId);
+    }
+    
+    /**
+     * Tiếp tục download chunked
+     */
+    public void resumeChunkedTransfer(String transferId) {
+        chunkedTransferService.resumeTransfer(transferId);
+    }
+    
+    /**
+     * Hủy download chunked
+     */
+    public void cancelChunkedTransfer(String transferId) {
+        chunkedTransferService.cancelTransfer(transferId);
+    }
+    
+    /**
+     * Lấy trạng thái transfer
+     */
+    public TransferState getTransferState(String transferId) {
+        return chunkedTransferService.getTransferState(transferId);
+    }
+    
+    /**
+     * Bật/tắt chế độ chunked transfer
+     */
+    public void setUseChunkedTransfer(boolean useChunked) {
+        this.useChunkedTransfer = useChunked;
+        System.out.println("📦 Chế độ transfer: " + (useChunked ? "Chunked (có resume)" : "Stream (không resume)"));
+    }
+    
+    /**
+     * Kiểm tra đang dùng chunked transfer hay không
+     */
+    public boolean isUseChunkedTransfer() {
+        return useChunkedTransfer;
     }
 
     /**
@@ -586,7 +705,6 @@ public class P2PService {
         System.out.println("✓ Tìm thấy PIN: " + pin + " -> " + session.getFileInfo().getFileName());
         System.out.println("  📁 File: " + session.getFileInfo().getFileName());
         System.out.println("  📏 Size: " + session.getFileInfo().getFileSize() + " bytes");
-        System.out.println("  🌐 Relay: " + (session.getFileInfo().getRelayFileInfo() != null ? "Yes" : "No"));
         
         // Download file từ owner peer
         downloadFile(session.getOwnerPeer(), session.getFileInfo(), saveDirectory);
@@ -634,12 +752,7 @@ public class P2PService {
         return running;
     }
     
-    /**
-     * Lấy RelayClient instance để download/upload
-     */
-    public org.example.p2psharefile.network.RelayClient getRelayClient() {
-        return fileTransferService != null ? fileTransferService.getRelayClient() : null;
-    }
+
     
     // ========== UltraView Preview Methods ==========
     
@@ -781,35 +894,15 @@ public class P2PService {
         }
     }
     
-    /**
-     * Khởi động relay heartbeat (mỗi 30 giây)
-     */
-    private void startRelayHeartbeat(RelayClient relayClient) {
-        Thread heartbeatThread = new Thread(() -> {
-            while (running) {
-                try {
-                    Thread.sleep(30000); // 30 giây
-                    if (running && relayClient != null) {
-                        relayClient.sendHeartbeat(localPeer.getPeerId());
-                    }
-                } catch (InterruptedException e) {
-                    break;
-                } catch (Exception e) {
-                    // Ignore heartbeat errors
-                }
-            }
-        }, "RelayHeartbeat");
-        heartbeatThread.setDaemon(true);
-        heartbeatThread.start();
-    }
+
     
     /**
      * Set connection mode cho tất cả services
-     * @param p2pOnly true = P2P only (LAN), false = Relay only (Internet)
+     * @param p2pOnly true = P2P only (LAN), false = P2P Hybrid (Internet với signaling server)
      */
     public void setP2POnlyMode(boolean p2pOnly) {
         System.out.println("\n🔧 ========== CHUYỂN CHẾ ĐỘ KẾT NỐI ==========");
-        System.out.println("   Mode: " + (p2pOnly ? "P2P (Mạng LAN - Bảo mật cao)" : "Relay (Internet - Kết nối mọi nơi)"));
+        System.out.println("   Chế độ: " + (p2pOnly ? "P2P LAN (Mạng cục bộ - Bảo mật cao)" : "P2P Hybrid (Internet với Signaling Server)"));
         
         // Set mode cho PeerDiscovery
         peerDiscovery.setP2POnlyMode(p2pOnly);
@@ -817,32 +910,83 @@ public class P2PService {
         // Set mode cho FileSearchService
         fileSearchService.setP2POnlyMode(p2pOnly);
         
-        // Set mode cho PINCodeService
+        // Set mode cho PINCodeService và cung cấp SignalingClient
         pinCodeService.setP2POnlyMode(p2pOnly);
+        if (!p2pOnly) {
+            pinCodeService.setSignalingClient(signalingClient);
+        }
         
-        // Nếu chuyển sang Relay mode, trigger discover peers qua relay
-        if (!p2pOnly && fileTransferService.isRelayEnabled()) {
-            RelayClient relayClient = fileTransferService.getRelayClient();
-            if (relayClient != null) {
-                new Thread(() -> {
-                    try {
-                        List<PeerInfo> relayPeers = relayClient.discoverPeers(localPeer.getPeerId());
-                        for (PeerInfo peer : relayPeers) {
-                            peerDiscovery.addDiscoveredPeer(peer);
-                            notifyPeerDiscovered(peer);
-                        }
-                        if (!relayPeers.isEmpty()) {
-                            System.out.println("🌐 Đã phát hiện " + relayPeers.size() + " peer(s) qua Internet");
-                        }
-                    } catch (Exception e) {
-                        System.err.println("Lỗi discover peers qua relay: " + e.getMessage());
-                    }
-                }, "RelayDiscoveryOnModeSwitch").start();
+        // Xử lý Signaling Client
+        if (p2pOnly) {
+            // Chế độ LAN: Ngắt kết nối Signaling Server
+            if (signalingClient != null && signalingClient.isConnected()) {
+                System.out.println("   🔌 Ngắt kết nối Signaling Server...");
+                signalingClient.disconnect();
+                stopSignalingRefresh();
+            }
+        } else {
+            // Chế độ Internet: Kết nối Signaling Server
+            if (signalingClient != null && !signalingClient.isConnected()) {
+                System.out.println("   🌐 Đang kết nối Signaling Server...");
+                signalingClient.connect();
+                startSignalingRefresh();
             }
         }
         
         System.out.println("✅ Đã chuyển chế độ kết nối thành công!");
         System.out.println("================================================\n");
+    }
+    
+    /**
+     * Bắt đầu refresh định kỳ danh sách peers từ Signaling Server
+     */
+    private void startSignalingRefresh() {
+        if (signalingRefreshExecutor != null) {
+            signalingRefreshExecutor.shutdownNow();
+        }
+        
+        signalingRefreshExecutor = Executors.newScheduledThreadPool(1);
+        signalingRefreshExecutor.scheduleAtFixedRate(() -> {
+            if (signalingClient != null && signalingClient.isConnected()) {
+                signalingClient.refreshPeerList();
+            }
+        }, 5, 30, TimeUnit.SECONDS); // Refresh mỗi 30 giây
+        
+        System.out.println("   ⏰ Đã bắt đầu refresh định kỳ danh sách peers (30s)");
+    }
+    
+    /**
+     * Dừng refresh định kỳ
+     */
+    private void stopSignalingRefresh() {
+        if (signalingRefreshExecutor != null) {
+            signalingRefreshExecutor.shutdownNow();
+            signalingRefreshExecutor = null;
+        }
+    }
+    
+    /**
+     * Cấu hình địa chỉ Signaling Server
+     */
+    public void setSignalingServerAddress(String host, int port) {
+        if (signalingClient != null) {
+            signalingClient.setServerAddress(host, port);
+            System.out.println("📍 Đã cấu hình Signaling Server: " + host + ":" + port);
+        }
+    }
+    
+    /**
+     * Lấy SignalingClient
+     */
+    public SignalingClient getSignalingClient() {
+        return signalingClient;
+    }
+    
+    /**
+     * Kiểm tra đã kết nối Signaling Server chưa
+     */
+    public boolean isSignalingConnected() {
+        return signalingClient != null && signalingClient.isConnected();
     }
     
     /**

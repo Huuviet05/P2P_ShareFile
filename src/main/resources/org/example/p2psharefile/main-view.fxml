@@ -358,13 +358,63 @@
         </HBox>
     </center>
     
-    <!-- Small footer bar (same color as header) -->
+    <!-- Footer hiện đại với thanh tiến trình -->
     <bottom>
-        <HBox styleClass="footer-bar" alignment="CENTER_LEFT">
-            <HBox spacing="8" alignment="CENTER_LEFT" HBox.hgrow="ALWAYS">
-                <Label text="" styleClass="footer-text"/>
+        <VBox styleClass="modern-footer" spacing="0">
+            
+            <!-- Transfer Progress - Lớn & Đẹp -->
+            <HBox fx:id="globalTransferBox" styleClass="transfer-bar" spacing="20" alignment="CENTER">
+                <!-- Label bên trái -->
+                <Label text="Thanh tiến trình" styleClass="transfer-label"/>
+                
+                <!-- Progress Bar Center - TO HƠN -->
+                <HBox spacing="16" alignment="CENTER" HBox.hgrow="ALWAYS" styleClass="transfer-progress-center">
+                    <ProgressBar fx:id="globalTransferProgress" progress="0" 
+                                prefHeight="24" maxWidth="Infinity" HBox.hgrow="ALWAYS" styleClass="beautiful-progress"/>
+                    <Label fx:id="globalTransferPercent" text="0%" styleClass="transfer-percent-badge"/>
+                </HBox>
+                
+                <!-- Hidden labels for controller compatibility -->
+                <Label fx:id="globalTransferIcon" text="" visible="false" managed="false"/>
+                <Label fx:id="globalTransferFileName" text="" visible="false" managed="false"/>
+                <Label fx:id="globalChunkInfo" text="" visible="false" managed="false"/>
+                <Label fx:id="globalTransferSize" text="" visible="false" managed="false"/>
+                <Label fx:id="globalTransferEta" text="" visible="false" managed="false"/>
+                
+                <!-- Info & Controls Right -->
+                <HBox spacing="10" alignment="CENTER_RIGHT" styleClass="transfer-controls-right">
+                    <Label fx:id="globalTransferSpeed" text="" styleClass="transfer-speed-badge"/>
+                    <Label fx:id="globalTransferStatus" text="" styleClass="transfer-status-badge"/>
+                    <Button fx:id="globalPauseBtn" text="⏸" styleClass="btn-control-modern"
+                            onAction="#handleGlobalPause" disable="true"/>
+                    <Button fx:id="globalResumeBtn" text="▶" styleClass="btn-control-modern btn-resume"
+                            visible="false" managed="false" onAction="#handleGlobalResume"/>
+                    <Button fx:id="globalCancelBtn" text="✕" styleClass="btn-control-cancel"
+                            onAction="#handleGlobalCancel" disable="true"/>
+                </HBox>
             </HBox>
-        </HBox>
+            
+            <!-- App Footer - NỀN ĐEN CHỮ TRẮNG như header -->
+            <HBox styleClass="app-footer" alignment="CENTER" 
+                  style="-fx-background-color: #1f2937;">
+                <HBox spacing="8" alignment="CENTER_LEFT">
+                    <Label text="P2P ShareFile" styleClass="footer-brand" 
+                           style="-fx-text-fill: #ffffff; -fx-font-size: 14; -fx-font-weight: bold;"/>
+                </HBox>
+                <Region HBox.hgrow="ALWAYS"/>
+                <HBox spacing="16" alignment="CENTER_RIGHT">
+                    <Label text="🔒 End-to-End Encrypted" styleClass="footer-feature"
+                           style="-fx-text-fill: #ffffff;"/>
+                    <Label text="⚡ Peer-to-Peer" styleClass="footer-feature"
+                           style="-fx-text-fill: #ffffff;"/>
+                    <Label fx:id="footerTransferCount" text="" styleClass="footer-transfer-count"
+                           style="-fx-text-fill: #ffffff;"/>
+                    <Label fx:id="footerStatusLabel" text="" visible="false" managed="false"/>
+                    <Label text="v2.0" styleClass="footer-version"
+                           style="-fx-text-fill: #ffffff; -fx-background-color: #374151;"/>
+                </HBox>
+            </HBox>
+        </VBox>
     </bottom>
     
 </BorderPane>

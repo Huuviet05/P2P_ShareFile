@@ -118,8 +118,8 @@
 .modern-tab-pane > .tab-header-area > .headers-region > .tab {
 	-fx-background-color: transparent;
 	-fx-background-radius: 8;
-	-fx-padding: 12 8;
-	-fx-pref-width: 80;
+	-fx-padding: 12 10;
+	-fx-pref-width: 90;
 }
 
 .modern-tab-pane > .tab-header-area > .headers-region > .tab:hover {
@@ -132,6 +132,10 @@
 
 .tab-graphic {
 	-fx-padding: 4 0;
+}
+
+.tab-graphic .label {
+	-fx-font-size: 18;
 }
 
 .tab-label-text {
@@ -1674,4 +1678,208 @@
 .download-time {
 	-fx-font-size: 12;
 	-fx-text-fill: #9ca3af;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   MODERN FOOTER - BEAUTIFUL & COMPACT
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.modern-footer {
+	-fx-background-color: #1f2937;
+}
+
+/* Transfer Bar - LỚN & ĐẸP */
+.transfer-bar {
+	-fx-background-color: #1f2937;
+	-fx-padding: 14 32;
+	-fx-border-color: #374151;
+	-fx-border-width: 0 0 1 0;
+}
+
+.transfer-label {
+	-fx-font-size: 15;
+	-fx-font-weight: bold;
+	-fx-text-fill: #ffffff;
+	-fx-min-width: 160;
+}
+
+.transfer-icon-box {
+	-fx-background-color: #3b82f6;
+	-fx-background-radius: 8;
+	-fx-min-width: 36;
+	-fx-min-height: 36;
+	-fx-max-width: 36;
+	-fx-max-height: 36;
+	-fx-alignment: center;
+}
+
+.transfer-icon {
+	-fx-font-size: 16;
+	-fx-text-fill: #ffffff;
+}
+
+.transfer-file-name {
+	-fx-font-size: 13;
+	-fx-font-weight: bold;
+	-fx-text-fill: #ffffff;
+}
+
+.transfer-chunk-text {
+	-fx-font-size: 11;
+	-fx-text-fill: #9ca3af;
+}
+
+/* Beautiful Progress Bar - LỚN HƠN */
+.beautiful-progress {
+	-fx-pref-height: 24;
+	-fx-min-height: 24;
+	-fx-background-color: #374151;
+	-fx-background-radius: 12;
+}
+
+.beautiful-progress .track {
+	-fx-background-color: #374151;
+	-fx-background-radius: 12;
+	-fx-pref-height: 24;
+}
+
+.beautiful-progress .bar {
+	-fx-background-color: linear-gradient(to right, #3b82f6, #8b5cf6, #06b6d4);
+	-fx-background-radius: 12;
+	-fx-background-insets: 3;
+}
+
+.transfer-percent-badge {
+	-fx-font-size: 14;
+	-fx-font-weight: bold;
+	-fx-text-fill: #ffffff;
+	-fx-background-color: #3b82f6;
+	-fx-background-radius: 14;
+	-fx-padding: 6 14;
+	-fx-min-width: 55;
+	-fx-alignment: center;
+}
+
+.transfer-speed-badge {
+	-fx-font-size: 12;
+	-fx-text-fill: #34d399;
+	-fx-font-weight: 600;
+}
+
+.transfer-status-badge {
+	-fx-font-size: 12;
+	-fx-text-fill: #60a5fa;
+	-fx-font-weight: 500;
+}
+
+/* Control Buttons */
+.btn-control-modern {
+	-fx-background-color: #374151;
+	-fx-text-fill: #ffffff;
+	-fx-font-size: 12;
+	-fx-padding: 6 10;
+	-fx-background-radius: 8;
+	-fx-cursor: hand;
+	-fx-min-width: 32;
+	-fx-min-height: 28;
+}
+
+.btn-control-modern:hover {
+	-fx-background-color: #4b5563;
+}
+
+.btn-control-modern:disabled {
+	-fx-background-color: #1f2937;
+	-fx-text-fill: #4b5563;
+	-fx-opacity: 0.5;
+}
+
+.btn-resume {
+	-fx-background-color: #059669;
+}
+
+.btn-resume:hover {
+	-fx-background-color: #10b981;
+}
+
+.btn-control-cancel {
+	-fx-background-color: #7f1d1d;
+	-fx-text-fill: #ffffff;
+	-fx-font-size: 12;
+	-fx-padding: 6 10;
+	-fx-background-radius: 8;
+	-fx-cursor: hand;
+	-fx-min-width: 32;
+	-fx-min-height: 28;
+}
+
+.btn-control-cancel:hover {
+	-fx-background-color: #dc2626;
+}
+
+.btn-control-cancel:disabled {
+	-fx-background-color: #1f2937;
+	-fx-text-fill: #4b5563;
+	-fx-opacity: 0.5;
+}
+
+/* App Footer - NỀN ĐEN CHỮ TRẮNG như header */
+.app-footer {
+	-fx-background-color: #1f2937;
+	-fx-padding: 14 32;
+	-fx-border-color: #374151;
+	-fx-border-width: 1 0 0 0;
+	-fx-min-height: 48;
+}
+
+.app-footer .label {
+	-fx-text-fill: #ffffff;
+}
+
+.app-footer HBox {
+	-fx-background-color: transparent;
+}
+
+.footer-logo {
+	-fx-background-color: #3b82f6;
+	-fx-background-radius: 4;
+	-fx-text-fill: #ffffff !important;
+	-fx-font-size: 10;
+	-fx-font-weight: bold;
+	-fx-padding: 2 6;
+}
+
+.footer-brand {
+	-fx-font-size: 14;
+	-fx-font-weight: bold;
+	-fx-text-fill: #ffffff;
+}
+
+.footer-dot {
+	-fx-text-fill: #ffffff;
+	-fx-font-size: 10;
+}
+
+.footer-tagline {
+	-fx-font-size: 12;
+	-fx-text-fill: #ffffff;
+	-fx-font-style: italic;
+}
+
+.footer-feature {
+	-fx-font-size: 12;
+	-fx-text-fill: #ffffff;
+}
+
+.footer-version {
+	-fx-font-size: 12;
+	-fx-text-fill: #ffffff;
+	-fx-background-color: #374151;
+	-fx-background-radius: 4;
+	-fx-padding: 4 10;
+}
+
+.footer-transfer-count {
+	-fx-font-size: 12;
+	-fx-text-fill: #ffffff;
 }

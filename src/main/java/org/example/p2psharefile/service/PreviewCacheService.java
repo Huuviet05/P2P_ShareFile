@@ -82,7 +82,7 @@ public class PreviewCacheService {
             return manifest;
             
         } catch (Exception e) {
-            System.err.println("Lỗi khi tạo manifest: " + e.getMessage());
+            System.err.println("⚠ Lỗi khi tạo manifest: " + e.getMessage());
             return null;
         }
     }
@@ -112,7 +112,7 @@ public class PreviewCacheService {
             File file = fileCache.get(fileHash);
             
             if (manifest == null || file == null) {
-                System.err.println("Không tìm thấy manifest hoặc file cho hash: " + fileHash);
+                System.err.println("⚠ Không tìm thấy manifest hoặc file cho hash: " + fileHash);
                 return null;
             }
             
@@ -128,7 +128,7 @@ public class PreviewCacheService {
             return content;
             
         } catch (Exception e) {
-            System.err.println("Lỗi khi tạo preview content: " + e.getMessage());
+            System.err.println("⚠ Lỗi khi tạo preview content: " + e.getMessage());
             return null;
         }
     }

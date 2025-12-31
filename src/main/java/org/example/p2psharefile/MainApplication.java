@@ -12,8 +12,14 @@ import java.io.IOException;
  * MainApplication - Ứng dụng chính P2P Share File
  * 
  * Đây là entry point của ứng dụng JavaFX
+ * 
+ * Program arguments: [port]
+ * - port: Port TCP để nhận file (mặc định: 0 = auto)
+ * Ví dụ: java -jar P2P_ShareFile.jar 8443
  */
 public class MainApplication extends Application {
+    
+    private static int customPort = 0; // 0 = auto, được truyền từ args
     
     @Override
     public void start(Stage stage) throws IOException {
@@ -21,7 +27,14 @@ public class MainApplication extends Application {
             MainApplication.class.getResource("main-view.fxml")
         );
         
-        Scene scene = new Scene(fxmlLoader.load(), 1100, 750);
+        // Load FXML và lấy controller
+        javafx.scene.Parent root = fxmlLoader.load();
+        
+        // Truyền port vào controller
+        var controller = (org.example.p2psharefile.controller.MainController) fxmlLoader.getController();
+        controller.setCustomPort(customPort);
+        
+        Scene scene = new Scene(root, 1100, 750);
         
         // Load custom CSS stylesheet
         String css = MainApplication.class.getResource("styles.css").toExternalForm();
@@ -45,8 +58,8 @@ public class MainApplication extends Application {
         System.out.println("=".repeat(60));
         System.out.println("📚 Ứng dụng chia sẻ file Peer-to-Peer");
         System.out.println("✨ Tính năng:");
-        System.out.println("   - P2P Mode: Kết nối trực tiếp LAN (TCP + TLS)");
-        System.out.println("   - Relay Mode: Kết nối qua Internet (HTTP Relay)");
+        System.out.println("   - P2P LAN: Kết nối trực tiếp trong mạng LAN (TCP + TLS)");
+        System.out.println("   - P2P Internet: Kết nối qua Signaling Server");
         System.out.println("   - File Transfer với Compression & Encryption");
         System.out.println("   - PIN Code Sharing (Send Anywhere style)");
         System.out.println("   - UltraView Preview (Image, PDF, Archive)");
@@ -55,6 +68,20 @@ public class MainApplication extends Application {
     }
 
     public static void main(String[] args) {
+        // Parse port từ command line arguments
+        if (args.length > 0) {
+            try {
+                customPort = Integer.parseInt(args[0]);
+                System.out.println("⚙️  Port được chỉ định: " + customPort);
+            } catch (NumberFormatException e) {
+                System.err.println("⚠️  Port không hợp lệ: " + args[0] + ". Sử dụng port mặc định (auto).");
+                customPort = 0;
+            }
+        } else {
+            System.out.println("⚙️  Không có port được chỉ định. Sử dụng port mặc định (auto).");
+            customPort = 0;
+        }
+        
         launch();
     }
 }

@@ -6,7 +6,6 @@ import org.example.p2psharefile.security.SecurityManager;
 import org.example.p2psharefile.security.FileHashUtil;
 import org.example.p2psharefile.model.FileInfo;
 import org.example.p2psharefile.model.PeerInfo;
-import org.example.p2psharefile.model.*;
 
 import javax.crypto.SecretKey;
 import javax.net.ssl.*;
@@ -19,6 +18,10 @@ import java.util.logging.Logger;
 /**
  * FileTransferService - Truyền file qua TLS/SSL với mã hóa AES
  * 
+ * Hỗ trợ 2 chế độ:
+ * - LAN Mode: P2P thuần túy qua mạng LAN
+ * - Internet Mode: P2P Hybrid với signaling server 
+ * 
  * Quy trình truyền file (với TLS + AES):
  * 1. Peer A yêu cầu download file từ Peer B
  * 2. TLS channel được thiết lập (confidentiality + integrity)
@@ -29,7 +32,8 @@ import java.util.logging.Logger;
  * - TLS: Bảo vệ transport channel
  * - AES: Mã hóa file content (defense in depth)
  * 
- * Note: Có thể dùng ephemeral DH để tạo session key thay vì shared AES key
+ * @author P2PShareFile Team
+ * @version 2.0 - P2P Hybrid (dùng Signaling Server cho Internet, không dùng relay)
  */
 public class FileTransferService {
     
@@ -43,9 +47,6 @@ public class FileTransferService {
     private final SecretKey encryptionKey;
     private final int transferPort;
     
-    private RelayClient relayClient;                      // Relay client
-    private RelayConfig relayConfig;                      // Relay config
-    
     private SSLServerSocket transferServer;
     private ExecutorService executorService;
     private volatile boolean running = false;
@@ -57,10 +58,6 @@ public class FileTransferService {
         void onProgress(long bytesTransferred, long totalBytes);
         void onComplete(File file);
         void onError(Exception e);
-
-        void onP2PFailed(String reason);
-
-        void onRelayFallback(String transferId);
     }
     
     public FileTransferService(PeerInfo localPeer, SecurityManager securityManager) {
@@ -76,29 +73,6 @@ public class FileTransferService {
         this.securityManager = securityManager;
         this.transferPort = localPeer.getPort();
         this.encryptionKey = customKey;
-    }
-    
-    /**
-     * Bật relay với config
-     */
-    public void enableRelay(RelayConfig config) {
-        this.relayConfig = config;
-        this.relayClient = new RelayClient(config);
-        LOGGER.info("✓ Relay đã được bật: " + config.getServerUrl());
-    }
-    
-    /**
-     * Kiểm tra relay có được bật không
-     */
-    public boolean isRelayEnabled() {
-        return relayClient != null && relayConfig != null;
-    }
-    
-    /**
-     * Lấy relay client instance
-     */
-    public RelayClient getRelayClient() {
-        return relayClient;
     }
     
     /**
@@ -134,7 +108,7 @@ public class FileTransferService {
                 transferServer.close();
             }
         } catch (IOException e) {
-            System.err.println("Lỗi khi đóng transfer server: " + e.getMessage());
+            System.err.println("⚠ Lỗi khi đóng transfer server: " + e.getMessage());
         }
         
         if (executorService != null) {
@@ -157,7 +131,7 @@ public class FileTransferService {
                 break;
             } catch (IOException e) {
                 if (running) {
-                    System.err.println("Lỗi khi accept transfer connection: " + e.getMessage());
+                    System.err.println("⚠ Lỗi chấp nhận kết nối truyền file: " + e.getMessage());
                 }
             }
         }
@@ -210,7 +184,7 @@ public class FileTransferService {
             System.out.println("  ✓ Upload hoàn tất");
             
         } catch (Exception e) {
-            System.err.println("Lỗi khi upload file: " + e.getMessage());
+            System.err.println("⚠ Lỗi khi upload file: " + e.getMessage());
             e.printStackTrace();
         } finally {
             try {
@@ -222,7 +196,7 @@ public class FileTransferService {
     }
     
     /**
-     * Download file từ peer khác (qua TLS hoặc Relay)
+     * Download file từ peer khác qua P2P (TLS)
      * 
      * @param peer Peer có file
      * @param fileInfo Thông tin file cần download
@@ -235,27 +209,7 @@ public class FileTransferService {
             try {
                 System.out.println("📥 Đang download file: " + fileInfo.getFileName() + " từ " + peer);
                 
-                // Nếu peer là từ relay hoặc file có relay info, download qua relay
-                if ("relay".equals(peer.getIpAddress()) || 
-                    (fileInfo.getRelayFileInfo() != null && isRelayEnabled())) {
-                    
-                    if (fileInfo.getRelayFileInfo() != null) {
-                        System.out.println("🌐 Download qua relay server...");
-                        if (listener != null) {
-                            listener.onRelayFallback("relay-" + System.currentTimeMillis());
-                        }
-                        downloadFileViaRelay(fileInfo.getRelayFileInfo(), saveDirectory, listener);
-                        return;
-                    } else {
-                        System.err.println("❌ File không có relay info");
-                        if (listener != null) {
-                            listener.onError(new IOException("File not available on relay server"));
-                        }
-                        return;
-                    }
-                }
-                
-                // Download P2P bình thường
+                // Download P2P qua TLS
                 SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), peer.getPort());
                 socket.connect(new InetSocketAddress(peer.getIpAddress(), peer.getPort()), 5000);
                 socket.setSoTimeout(60000); // Timeout 60 giây
@@ -337,91 +291,8 @@ public class FileTransferService {
                 }
                 
             } catch (Exception e) {
-                System.err.println("Lỗi khi download file: " + e.getMessage());
+                System.err.println("⚠ Lỗi khi download file: " + e.getMessage());
                 e.printStackTrace();
-                if (listener != null) {
-                    listener.onError(e);
-                }
-            }
-        });
-    }    
-    /**
-     * Download file với fallback tự động từ P2P sang Relay
-     * 
-     * @param peer Peer có file
-     * @param fileInfo Thông tin file
-     * @param saveDirectory Thư mục lưu file
-     * @param listener Listener để theo dõi progress
-     */
-    public void downloadFileWithFallback(PeerInfo peer, FileInfo fileInfo,
-                                         String saveDirectory, TransferProgressListener listener) {
-        executorService.submit(() -> {
-            try {
-                LOGGER.info("🔄 Thử download P2P từ " + peer.getDisplayName());
-                
-                // Thử P2P trước với timeout
-                Future<Boolean> p2pFuture = executorService.submit(() -> {
-                    try {
-                        downloadFileP2PSync(peer, fileInfo, saveDirectory, listener);
-                        return true;
-                    } catch (Exception e) {
-                        LOGGER.warning("⚠ P2P thất bại: " + e.getMessage());
-                        return false;
-                    }
-                });
-                
-                try {
-                    // Đợi P2P với timeout
-                    boolean p2pSuccess = p2pFuture.get(
-                        relayConfig != null ? relayConfig.getP2pTimeoutMs() : P2P_TIMEOUT_MS,
-                        TimeUnit.MILLISECONDS
-                    );
-                    
-                    if (p2pSuccess) {
-                        LOGGER.info("✅ P2P download thành công");
-                        return;
-                    }
-                    
-                } catch (TimeoutException e) {
-                    p2pFuture.cancel(true);
-                    LOGGER.info("⏱ P2P timeout sau " + P2P_TIMEOUT_MS + "ms");
-                    if (listener != null) {
-                        listener.onP2PFailed("Timeout");
-                    }
-                } catch (Exception e) {
-                    LOGGER.warning("⚠ P2P exception: " + e.getMessage());
-                    if (listener != null) {
-                        listener.onP2PFailed(e.getMessage());
-                    }
-                }
-                
-                // Fallback sang Relay nếu được bật
-                if (isRelayEnabled()) {
-                    LOGGER.info("🔄 Fallback sang Relay...");
-                    if (listener != null) {
-                        listener.onRelayFallback("relay-" + System.currentTimeMillis());
-                    }
-                    
-                    // Kiểm tra xem fileInfo có relayFileInfo không
-                    if (fileInfo.getRelayFileInfo() != null) {
-                        LOGGER.info("📡 Đang download qua relay server...");
-                        downloadFileViaRelay(fileInfo.getRelayFileInfo(), saveDirectory, listener);
-                    } else {
-                        LOGGER.warning("⚠ File chưa có relay info, không thể download qua relay");
-                        if (listener != null) {
-                            listener.onError(new IOException("File not available on relay server"));
-                        }
-                    }
-                    
-                } else {
-                    LOGGER.severe("❌ Relay chưa được bật, không thể fallback");
-                    if (listener != null) {
-                        listener.onError(new IOException("P2P failed and relay not enabled"));
-                    }
-                }
-                
-            } catch (Exception e) {
-                LOGGER.severe("❌ Lỗi download: " + e.getMessage());
                 if (listener != null) {
                     listener.onError(e);
                 }
@@ -432,8 +303,8 @@ public class FileTransferService {
     /**
      * Download P2P đồng bộ (dùng cho timeout check)
      */
-    private void downloadFileP2PSync(PeerInfo peer, FileInfo fileInfo,
-                                     String saveDirectory, TransferProgressListener listener) throws Exception {
+    public void downloadFileSync(PeerInfo peer, FileInfo fileInfo,
+                                 String saveDirectory, TransferProgressListener listener) throws Exception {
         SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), peer.getPort());
         socket.connect(new InetSocketAddress(peer.getIpAddress(), peer.getPort()), 3000);
         socket.setSoTimeout(30000);
@@ -483,136 +354,6 @@ public class FileTransferService {
         }
     }
     
-    /**
-     * Upload file qua relay
-     */
-    public void uploadFileViaRelay(File file, PeerInfo recipient, TransferProgressListener listener) {
-        if (!isRelayEnabled()) {
-            LOGGER.severe("❌ Relay chưa được bật");
-            if (listener != null) {
-                listener.onError(new IllegalStateException("Relay not enabled"));
-            }
-            return;
-        }
-        
-        executorService.submit(() -> {
-            try {
-                LOGGER.info("📤 Upload file qua relay: " + file.getName());
-                
-                // Tạo upload request
-                String fileHash = FileHashUtil.calculateSHA256(file);
-                RelayUploadRequest request = new RelayUploadRequest(
-                    localPeer.getPeerId(),
-                    localPeer.getDisplayName(),
-                    file.getName(),
-                    file.length(),
-                    fileHash
-                );
-                request.setRecipientId(recipient.getPeerId());
-                request.setMimeType(guessMimeType(file.getName()));
-                
-                // Upload
-                RelayFileInfo fileInfo = relayClient.uploadFile(file, request, new RelayClient.RelayTransferListener() {
-                    @Override
-                    public void onProgress(RelayTransferProgress progress) {
-                        if (listener != null) {
-                            listener.onProgress(progress.getTransferredBytes(), progress.getTotalBytes());
-                        }
-                    }
-                    
-                    @Override
-                    public void onComplete(RelayFileInfo info) {
-                        LOGGER.info("✅ Upload relay thành công: " + info.getUploadId());
-                        // TODO: Gửi RelayFileInfo cho recipient qua signaling
-                    }
-                    
-                    @Override
-                    public void onError(Exception e) {
-                        LOGGER.severe("❌ Upload relay thất bại: " + e.getMessage());
-                        if (listener != null) {
-                            listener.onError(e);
-                        }
-                    }
-                });
-                
-                if (fileInfo != null && listener != null) {
-                    listener.onComplete(file);
-                }
-                
-            } catch (Exception e) {
-                LOGGER.severe("❌ Lỗi upload relay: " + e.getMessage());
-                if (listener != null) {
-                    listener.onError(e);
-                }
-            }
-        });
-    }
-    
-    /**
-     * Download file qua relay
-     */
-    public void downloadFileViaRelay(RelayFileInfo fileInfo, String saveDirectory, TransferProgressListener listener) {
-        if (!isRelayEnabled()) {
-            LOGGER.severe("❌ Relay chưa được bật");
-            if (listener != null) {
-                listener.onError(new IllegalStateException("Relay not enabled"));
-            }
-            return;
-        }
-        
-        executorService.submit(() -> {
-            try {
-                LOGGER.info("📥 Download file qua relay: " + fileInfo.getFileName());
-                
-                File destFile = new File(saveDirectory, fileInfo.getFileName());
-                
-                boolean success = relayClient.downloadFile(fileInfo, destFile, new RelayClient.RelayTransferListener() {
-                    @Override
-                    public void onProgress(RelayTransferProgress progress) {
-                        if (listener != null) {
-                            listener.onProgress(progress.getTransferredBytes(), progress.getTotalBytes());
-                        }
-                    }
-                    
-                    @Override
-                    public void onComplete(RelayFileInfo info) {
-                        LOGGER.info("✅ Download relay thành công");
-                        if (listener != null) {
-                            listener.onComplete(destFile);
-                        }
-                    }
-                    
-                    @Override
-                    public void onError(Exception e) {
-                        LOGGER.severe("❌ Download relay thất bại: " + e.getMessage());
-                        if (listener != null) {
-                            listener.onError(e);
-                        }
-                    }
-                });
-                
-            } catch (Exception e) {
-                LOGGER.severe("❌ Lỗi download relay: " + e.getMessage());
-                if (listener != null) {
-                    listener.onError(e);
-                }
-            }
-        });
-    }
-    
-    /**
-     * Đoán MIME type từ tên file
-     */
-    private String guessMimeType(String fileName) {
-        String lower = fileName.toLowerCase();
-        if (lower.endsWith(".pdf")) return "application/pdf";
-        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
-        if (lower.endsWith(".png")) return "image/png";
-        if (lower.endsWith(".mp4")) return "video/mp4";
-        if (lower.endsWith(".mp3")) return "audio/mpeg";
-        if (lower.endsWith(".txt")) return "text/plain";
-        return "application/octet-stream";
-    }    
     /**
      * Upload file đơn giản (không qua request-response) với TLS
      * Dùng khi muốn chủ động gửi file cho peer
@@ -664,7 +405,7 @@ public class FileTransferService {
                 }
                 
             } catch (Exception e) {
-                System.err.println("Lỗi khi upload file: " + e.getMessage());
+                System.err.println("⚠ Lỗi khi upload file: " + e.getMessage());
                 if (listener != null) {
                     listener.onError(e);
                 }
@@ -677,5 +418,19 @@ public class FileTransferService {
      */
     public String getEncryptionKeyString() {
         return AESEncryption.keyToString(encryptionKey);
+    }
+    
+    /**
+     * Đoán MIME type từ tên file
+     */
+    private String guessMimeType(String fileName) {
+        String lower = fileName.toLowerCase();
+        if (lower.endsWith(".pdf")) return "application/pdf";
+        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+        if (lower.endsWith(".png")) return "image/png";
+        if (lower.endsWith(".mp4")) return "video/mp4";
+        if (lower.endsWith(".mp3")) return "audio/mpeg";
+        if (lower.endsWith(".txt")) return "text/plain";
+        return "application/octet-stream";
     }
 }

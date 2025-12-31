@@ -18,19 +18,18 @@ import java.util.concurrent.*;
  */
 public class FileSearchService {
 
-    private static final int SEARCH_PORT = 8891;
+    private static final int SEARCH_PORT = 10000; // Cố định
     private static final int SEARCH_TIMEOUT = 5000;
     private static final int CONNECTION_TIMEOUT = 2000;
 
     private final PeerInfo localPeer;
     private final PeerDiscovery peerDiscovery;
     private final SecurityManager securityManager;
+    private final int searchPort; // Port động
     private final Map<String, List<FileInfo>> sharedFiles;
     private final Set<String> processedRequests;
     
-    private RelayClient relayClient; // Để upload file lên relay server khi share
-    
-    // Connection mode: true = P2P only (LAN), false = Relay only (Internet)
+    // Connection mode: true = P2P LAN, false = P2P Hybrid (Internet)
     private volatile boolean p2pOnlyMode = true;
 
     private SSLServerSocket searchServer;
@@ -46,10 +45,10 @@ public class FileSearchService {
     }
 
     /**
-     * Forward request to discovered peers (except origin/self) and relay any SearchResponse
+     * Forward request to discovered peers (except origin/self) and send any SearchResponse
      * that contains files back to the origin peer (if origin known via PeerDiscovery).
      */
-    private void forwardRequestToPeersAndRelay(SearchRequest request) {
+    private void forwardRequestToPeers(SearchRequest request) {
         List<PeerInfo> peers = peerDiscovery.getDiscoveredPeers();
 
         for (PeerInfo peer : peers) {
@@ -73,18 +72,18 @@ public class FileSearchService {
                     if (obj instanceof SearchResponse) {
                         SearchResponse resp = (SearchResponse) obj;
                         if (resp != null && !resp.getFoundFiles().isEmpty()) {
-                            // Relay this response to origin peer if possible
+                            // Send this response to origin peer if possible
                             PeerInfo origin = peerDiscovery.getPeerById(request.getOriginPeerId());
                             if (origin != null && !origin.getPeerId().equals(localPeer.getPeerId())) {
-                                try (SSLSocket relay = securityManager.createSSLSocket(origin.getIpAddress(), SEARCH_PORT)) {
-                                    relay.connect(new InetSocketAddress(origin.getIpAddress(), SEARCH_PORT), CONNECTION_TIMEOUT);
-                                    relay.startHandshake();
-                                    try (ObjectOutputStream roos = new ObjectOutputStream(relay.getOutputStream())) {
-                                        roos.writeObject(resp);
-                                        roos.flush();
+                                try (SSLSocket forwardSocket = securityManager.createSSLSocket(origin.getIpAddress(), SEARCH_PORT)) {
+                                    forwardSocket.connect(new InetSocketAddress(origin.getIpAddress(), SEARCH_PORT), CONNECTION_TIMEOUT);
+                                    forwardSocket.startHandshake();
+                                    try (ObjectOutputStream foos = new ObjectOutputStream(forwardSocket.getOutputStream())) {
+                                        foos.writeObject(resp);
+                                        foos.flush();
                                     }
                                 } catch (IOException e) {
-                                    // Cannot relay to origin - ignore
+                                    // Cannot forward to origin - ignore
                                 }
                             }
                         }
@@ -104,6 +103,7 @@ public class FileSearchService {
         this.localPeer = localPeer;
         this.peerDiscovery = peerDiscovery;
         this.securityManager = securityManager;
+        this.searchPort = SEARCH_PORT; // Cố định
         this.sharedFiles = new ConcurrentHashMap<>();
         this.processedRequests = Collections.newSetFromMap(new ConcurrentHashMap<>());
         this.activeSearches = new ConcurrentHashMap<>();
@@ -115,11 +115,11 @@ public class FileSearchService {
         running = true;
 
         // SSLServerSocket để nhận search request
-        searchServer = securityManager.createSSLServerSocket(SEARCH_PORT);
+        searchServer = securityManager.createSSLServerSocket(searchPort);
         searchServer.setReuseAddress(true);
 
-        System.out.println("✓ File Search Service (TLS) đã khởi động trên port " + SEARCH_PORT);
-        System.out.println("  → Local Peer IP: " + localPeer.getIpAddress());
+        System.out.println("✓ File Search Service (TLS) đã khởi động trên port " + searchPort);
+        System.out.println("  → IP Peer cục bộ: " + localPeer.getIpAddress());
 
         executorService = Executors.newCachedThreadPool();
         scheduledExecutor = Executors.newScheduledThreadPool(1);
@@ -138,7 +138,7 @@ public class FileSearchService {
                 searchServer.close();
             }
         } catch (IOException e) {
-            System.err.println("Lỗi đóng search server: " + e.getMessage());
+            System.err.println("⚠ Lỗi đóng search server: " + e.getMessage());
         }
 
         if (executorService != null) {
@@ -153,7 +153,7 @@ public class FileSearchService {
      * Lắng nghe search request qua TCP
      */
     private void acceptSearchRequests() {
-        System.out.println("👂 Đang lắng nghe search request trên port " + SEARCH_PORT);
+        System.out.println("👂 Đang lắng nghe search request trên port " + searchPort);
 
         while (running) {
             try {
@@ -165,12 +165,12 @@ public class FileSearchService {
 
             } catch (SocketException e) {
                 if (running) {
-                    System.err.println("Socket error: " + e.getMessage());
+                    System.err.println("⚠ Lỗi Socket: " + e.getMessage());
                 }
                 break;
             } catch (IOException e) {
                 if (running) {
-                    System.err.println("Lỗi accept search connection: " + e.getMessage());
+                    System.err.println("⚠ Lỗi chấp nhận kết nối tìm kiếm: " + e.getMessage());
                 }
             }
         }
@@ -203,7 +203,7 @@ public class FileSearchService {
                 oos.writeObject(response);
                 oos.flush();
 
-                // Nếu còn TTL, forward request đến peers khác và relay response về origin khi có kết quả
+                // Nếu còn TTL, forward request đến peers khác
                 if (request.canForward()) {
                     // Tạo bản sao request để forward (giảm TTL)
                     SearchRequest forwardReq = new SearchRequest(request.getRequestId(), request.getOriginPeerId(), request.getSearchQuery(), request.getTtl());
@@ -211,7 +211,7 @@ public class FileSearchService {
 
                     // Submit forwarding task
                     executorService.submit(() -> {
-                        forwardRequestToPeersAndRelay(forwardReq);
+                        forwardRequestToPeers(forwardReq);
                     });
                 }
             }
@@ -220,7 +220,7 @@ public class FileSearchService {
 
         } catch (Exception e) {
             if (running) {
-                System.err.println("Lỗi xử lý search connection: " + e.getMessage());
+                System.err.println("⚠ Lỗi xử lý kết nối tìm kiếm: " + e.getMessage());
             }
         }
     }
@@ -263,7 +263,7 @@ public class FileSearchService {
     }
 
     /**
-     * Tìm kiếm file từ các peer (P2P hoặc Relay tùy mode)
+     * Tìm kiếm file từ các peer (P2P LAN hoặc P2P Hybrid tùy mode)
      */
     public void searchFile(String query, SearchResultCallback callback) {
         String requestId = UUID.randomUUID().toString();
@@ -271,52 +271,40 @@ public class FileSearchService {
 
         activeSearches.put(requestId, callback);
 
-        System.out.println("🔍 Bắt đầu tìm kiếm: \"" + query + "\" (Mode: " + (p2pOnlyMode ? "P2P" : "Relay") + ")");
+        System.out.println("🔍 Bắt đầu tìm kiếm: \"" + query + "\" (Mode: " + (p2pOnlyMode ? "P2P LAN" : "P2P Internet") + ")");
 
-        // ===== RELAY MODE =====
-        if (!p2pOnlyMode) {
-            // Chế độ Relay: Chỉ tìm trên relay server, không P2P
-            if (relayClient != null) {
-                executorService.submit(() -> {
-                    searchOnRelay(query, callback);
-                    // Schedule complete callback
-                    scheduledExecutor.schedule(() -> {
-                        activeSearches.remove(requestId);
-                        callback.onSearchComplete();
-                    }, SEARCH_TIMEOUT, TimeUnit.MILLISECONDS);
-                });
-            } else {
-                System.out.println("⚠ Relay client chưa được kích hoạt");
-                callback.onSearchComplete();
-                activeSearches.remove(requestId);
-            }
-            return;
-        }
-
-        // ===== P2P MODE =====
-        // Lấy danh sách peer và lọc chỉ lấy LAN peers (private IPs)
+        // Lấy danh sách peer
         List<PeerInfo> allPeers = peerDiscovery.getDiscoveredPeers();
-        List<PeerInfo> lanPeers = new ArrayList<>();
-        for (PeerInfo peer : allPeers) {
-            if (isPrivateIP(peer.getIpAddress())) {
-                lanPeers.add(peer);
+        List<PeerInfo> targetPeers = new ArrayList<>();
+        
+        if (p2pOnlyMode) {
+            // ===== P2P LAN MODE =====
+            // Lọc chỉ lấy LAN peers (private IPs)
+            for (PeerInfo peer : allPeers) {
+                if (isPrivateIP(peer.getIpAddress())) {
+                    targetPeers.add(peer);
+                }
             }
+        } else {
+            // ===== P2P HYBRID (Internet) MODE =====
+            // Sử dụng tất cả peers (cả LAN và Internet qua signaling)
+            targetPeers.addAll(allPeers);
         }
 
-        if (lanPeers.isEmpty()) {
-            System.out.println("⚠ Không có peer LAN nào để tìm kiếm");
+        if (targetPeers.isEmpty()) {
+            System.out.println("⚠ Không có peer nào để tìm kiếm");
             callback.onSearchComplete();
             activeSearches.remove(requestId);
             return;
         }
 
-        int lanCount = lanPeers.size();
-        System.out.println("📡 Gửi search request đến " + lanCount + " LAN peer(s)");
+        int peerCount = targetPeers.size();
+        System.out.println("📡 Gửi search request đến " + peerCount + " peer(s)");
 
-        // Gửi search request đến LAN peers only
-        CountDownLatch latch = new CountDownLatch(lanPeers.size());
+        // Gửi search request đến các peers
+        CountDownLatch latch = new CountDownLatch(targetPeers.size());
 
-        for (PeerInfo peer : lanPeers) {
+        for (PeerInfo peer : targetPeers) {
             executorService.submit(() -> {
                 try {
                     sendSearchRequest(peer, request, callback);
@@ -340,61 +328,6 @@ public class FileSearchService {
 
         }, SEARCH_TIMEOUT, TimeUnit.MILLISECONDS);
     }
-    
-    /**
-     * Tìm kiếm file trên relay server
-     */
-    private void searchOnRelay(String query, SearchResultCallback callback) {
-        try {
-            System.out.println("🌐 Tìm kiếm trên relay server: \"" + query + "\"");
-            
-            List<org.example.p2psharefile.model.RelayFileInfo> relayResults = 
-                relayClient.searchFiles(query, localPeer.getPeerId());
-            
-            if (relayResults.isEmpty()) {
-                System.out.println("  → Không tìm thấy file nào trên relay");
-                return;
-            }
-            
-            System.out.println("  → Tìm thấy " + relayResults.size() + " file(s) trên relay");
-            
-            // Chuyển đổi RelayFileInfo thành FileInfo và SearchResponse
-            for (org.example.p2psharefile.model.RelayFileInfo relayFile : relayResults) {
-                // Tạo PeerInfo cho sender (từ relay)
-                PeerInfo senderPeer = new PeerInfo(
-                    relayFile.getSenderId() != null ? relayFile.getSenderId() : "relay-" + relayFile.getUploadId(),
-                    "relay",  // IP là "relay" để phân biệt
-                    0,
-                    relayFile.getSenderName() != null ? relayFile.getSenderName() : "Relay User",
-                    null
-                );
-                
-                // Tạo FileInfo
-                FileInfo fileInfo = new FileInfo(
-                    relayFile.getFileName(),
-                    relayFile.getFileSize(),
-                    relayFile.getDownloadUrl()  // Dùng downloadUrl làm path
-                );
-                fileInfo.setChecksum(relayFile.getFileHash());
-                fileInfo.setFileHash(relayFile.getFileHash());
-                fileInfo.setRelayFileInfo(relayFile);
-                
-                // Tạo SearchResponse
-                List<FileInfo> files = new ArrayList<>();
-                files.add(fileInfo);
-                SearchResponse response = new SearchResponse(
-                    UUID.randomUUID().toString(),
-                    senderPeer,
-                    files
-                );
-                
-                callback.onSearchResult(response);
-            }
-            
-        } catch (Exception e) {
-            System.err.println("❌ Lỗi tìm kiếm trên relay: " + e.getMessage());
-        }
-    }
 
     /**
      * Gửi search request đến một peer (với TLS)
@@ -403,8 +336,9 @@ public class FileSearchService {
         SSLSocket socket = null;
         try {
             // Kết nối đến peer với TLS
-            socket = securityManager.createSSLSocket(peer.getIpAddress(), SEARCH_PORT);
-            socket.connect(new InetSocketAddress(peer.getIpAddress(), SEARCH_PORT), CONNECTION_TIMEOUT);
+            int peerSearchPort = peer.getPort();
+            socket = securityManager.createSSLSocket(peer.getIpAddress(), peerSearchPort);
+            socket.connect(new InetSocketAddress(peer.getIpAddress(), peerSearchPort), CONNECTION_TIMEOUT);
             socket.setSoTimeout(5000);
             socket.startHandshake();
 
@@ -448,80 +382,6 @@ public class FileSearchService {
         System.out.println("✓ [FileSearchService] Đã thêm file: " + fileInfo.getFileName() +
                 " vào thư mục: " + directory);
         System.out.println("  → Tổng số file đang chia sẻ: " + getSharedFileCount());
-        
-        // Tự động upload lên relay server nếu relay enabled
-        if (relayClient != null) {
-            uploadToRelayAsync(fileInfo);
-        }
-    }
-    
-    /**
-     * Upload file lên relay server (async)
-     */
-    private void uploadToRelayAsync(FileInfo fileInfo) {
-        // Tạo thread riêng để upload (không block UI)
-        new Thread(() -> {
-            try {
-                System.out.println("📤 Đang upload file lên relay server: " + fileInfo.getFileName());
-                
-                java.io.File file = new java.io.File(fileInfo.getFilePath());
-                if (!file.exists()) {
-                    System.err.println("❌ File không tồn tại: " + fileInfo.getFilePath());
-                    return;
-                }
-                
-                // Tạo RelayUploadRequest (senderId, senderName, fileName, fileSize, fileHash)
-                org.example.p2psharefile.model.RelayUploadRequest request = 
-                    new org.example.p2psharefile.model.RelayUploadRequest(
-                        localPeer.getPeerId(),
-                        localPeer.getDisplayName(),
-                        fileInfo.getFileName(),
-                        file.length(),
-                        fileInfo.getChecksum()
-                    );
-                
-                // Upload với progress listener
-                relayClient.uploadFile(file, request, new RelayClient.RelayTransferListener() {
-                    @Override
-                    public void onProgress(org.example.p2psharefile.model.RelayTransferProgress progress) {
-                        if (progress.getPercentage() % 20 == 0 || progress.getPercentage() == 100) {
-                            System.out.printf("  📊 Upload progress: %.1f%% (%d/%d bytes)\n",
-                                progress.getPercentage(),
-                                progress.getTransferredBytes(),
-                                progress.getTotalBytes());
-                        }
-                    }
-                    
-                    @Override
-                    public void onComplete(org.example.p2psharefile.model.RelayFileInfo relayFileInfo) {
-                        System.out.println("✅ Đã upload file lên relay: " + fileInfo.getFileName());
-                        System.out.println("  → Upload ID: " + relayFileInfo.getUploadId());
-                        System.out.println("  → Download URL: " + relayFileInfo.getDownloadUrl());
-                        
-                        // Lưu RelayFileInfo vào FileInfo
-                        fileInfo.setRelayFileInfo(relayFileInfo);
-                        
-                        // Đăng ký file để có thể search được
-                        relayClient.registerFileForSearch(relayFileInfo);
-                    }
-                    
-                    @Override
-                    public void onError(Exception e) {
-                        System.err.println("❌ Lỗi upload file lên relay: " + e.getMessage());
-                    }
-                });
-                
-            } catch (Exception e) {
-                System.err.println("❌ Lỗi upload file: " + e.getMessage());
-            }
-        }, "RelayUpload-" + fileInfo.getFileName()).start();
-    }
-    
-    /**
-     * Set RelayClient (được gọi từ P2PService)
-     */
-    public void setRelayClient(RelayClient relayClient) {
-        this.relayClient = relayClient;
     }
 
     public void removeSharedFile(String directory, String fileName) {
@@ -559,11 +419,11 @@ public class FileSearchService {
     
     /**
      * Set connection mode
-     * @param p2pOnly true = P2P only (LAN), false = Relay only (Internet)
+     * @param p2pOnly true = P2P LAN, false = P2P Hybrid (Internet)
      */
     public void setP2POnlyMode(boolean p2pOnly) {
         this.p2pOnlyMode = p2pOnly;
-        System.out.println("🔧 FileSearchService mode: " + (p2pOnly ? "P2P (LAN)" : "Relay (Internet)"));
+        System.out.println("🔧 FileSearchService mode: " + (p2pOnly ? "P2P (LAN)" : "P2P Hybrid (Internet)"));
     }
     
     /**
@@ -578,7 +438,7 @@ public class FileSearchService {
      * Private IPs: 10.x.x.x, 172.16-31.x.x, 192.168.x.x, 127.x.x.x
      */
     private boolean isPrivateIP(String ip) {
-        if (ip == null || ip.equals("relay") || ip.isEmpty()) return false;
+        if (ip == null || ip.isEmpty()) return false;
         
         try {
             String[] parts = ip.split("\\.");

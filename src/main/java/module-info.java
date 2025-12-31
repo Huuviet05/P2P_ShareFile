@@ -31,6 +31,6 @@ module org.example.p2psharefile {
     exports org.example.p2psharefile.network;
     exports org.example.p2psharefile.security;
     exports org.example.p2psharefile.compression;
-    exports org.example.p2psharefile.relay;
+    exports org.example.p2psharefile.signaling;
     exports org.example.p2psharefile.test;
 }

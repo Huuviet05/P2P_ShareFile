@@ -18,7 +18,7 @@ import java.util.concurrent.*;
  */
 public class PreviewService {
     
-    private static final int PREVIEW_PORT_OFFSET = 10;  // Preview port = transfer port + 10 (tránh vượt quá 65535)
+    private static final int PREVIEW_PORT = 10003; // Cố định
     
     private final PeerInfo localPeer;
     private final SecurityManager securityManager;
@@ -112,14 +112,14 @@ public class PreviewService {
         running = true;
         
         // Preview port = transfer port + offset (nếu hợp lệ, nếu không thì auto-assign)
-        int previewPort = localPeer.getPort() + PREVIEW_PORT_OFFSET;
+        int previewPort = localPeer.getPort();
         if (previewPort > 65535) {
             previewPort = 0; // Auto-assign nếu vượt quá giới hạn
             System.out.println("⚠ Port preview vượt quá 65535, sử dụng auto-assign");
         }
         
         try {
-            previewServer = securityManager.createSSLServerSocket(previewPort);
+            previewServer = securityManager.createSSLServerSocket(PREVIEW_PORT);
             executorService = Executors.newCachedThreadPool();
             
             // Thread lắng nghe preview requests
@@ -144,7 +144,7 @@ public class PreviewService {
                 previewServer.close();
             }
         } catch (IOException e) {
-            System.err.println("Lỗi khi đóng preview server: " + e.getMessage());
+            System.err.println("⚠ Lỗi khi đóng preview server: " + e.getMessage());
         }
         
         if (executorService != null) {
@@ -167,7 +167,7 @@ public class PreviewService {
                 break;
             } catch (IOException e) {
                 if (running) {
-                    System.err.println("Lỗi khi accept preview connection: " + e.getMessage());
+                    System.err.println("⚠ Lỗi chấp nhận kết nối preview: " + e.getMessage());
                 }
             }
         }
@@ -199,7 +199,7 @@ public class PreviewService {
                     
                 default:
                     response = new PreviewResponse(false);
-                    response.setErrorMessage("Unknown request type");
+                    response.setErrorMessage("Loại yêu cầu không xác định");
             }
             
             // Gửi response
@@ -207,7 +207,7 @@ public class PreviewService {
             oos.flush();
             
         } catch (Exception e) {
-            System.err.println("Lỗi khi xử lý preview request: " + e.getMessage());
+            System.err.println("⚠ Lỗi khi xử lý preview request: " + e.getMessage());
             e.printStackTrace();
         } finally {
             try {
@@ -310,7 +310,7 @@ public class PreviewService {
      */
     public PreviewManifest requestManifest(PeerInfo peer, String fileHash) {
         try {
-            int previewPort = peer.getPort() + PREVIEW_PORT_OFFSET;
+            int previewPort = peer.getPort();
             
             SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), previewPort);
             socket.connect(new InetSocketAddress(peer.getIpAddress(), previewPort), 5000);
@@ -370,7 +370,7 @@ public class PreviewService {
                     System.out.println("✓ Đã nhận manifest từ " + peer.getDisplayName());
                     return manifest;
                 } else {
-                    System.err.println("❌ Preview request failed: " + response.getErrorMessage());
+                    System.err.println("❌ Yêu cầu preview thất bại: " + response.getErrorMessage());
                     return null;
                 }
                 
@@ -379,7 +379,7 @@ public class PreviewService {
             }
             
         } catch (Exception e) {
-            System.err.println("Lỗi khi request manifest: " + e.getMessage());
+            System.err.println("⚠ Lỗi khi yêu cầu manifest: " + e.getMessage());
             return null;
         }
     }
@@ -390,7 +390,7 @@ public class PreviewService {
     public PreviewContent requestContent(PeerInfo peer, String fileHash, 
                                         PreviewManifest.PreviewType type) {
         try {
-            int previewPort = peer.getPort() + PREVIEW_PORT_OFFSET;
+            int previewPort = peer.getPort();
             
             SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), previewPort);
             socket.connect(new InetSocketAddress(peer.getIpAddress(), previewPort), 5000);
@@ -418,7 +418,7 @@ public class PreviewService {
                                      " (" + response.getContent().getFormattedSize() + ")");
                     return response.getContent();
                 } else {
-                    System.err.println("❌ Preview request failed: " + response.getErrorMessage());
+                    System.err.println("❌ Yêu cầu preview thất bại: " + response.getErrorMessage());
                     return null;
                 }
                 
@@ -427,7 +427,7 @@ public class PreviewService {
             }
             
         } catch (Exception e) {
-            System.err.println("Lỗi khi request preview content: " + e.getMessage());
+            System.err.println("⚠ Lỗi khi yêu cầu preview content: " + e.getMessage());
             return null;
         }
     }

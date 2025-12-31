@@ -2,6 +2,7 @@ package org.example.p2psharefile.service;
 
 import org.example.p2psharefile.model.*;
 import org.example.p2psharefile.network.PeerDiscovery;
+import org.example.p2psharefile.network.SignalingClient;
 import org.example.p2psharefile.security.SecurityManager;
 
 import javax.net.ssl.*;
@@ -20,6 +21,10 @@ import java.util.concurrent.*;
  * 3. Người khác nhập PIN → Download file
  * 4. PIN hết hạn sau 10 phút
  * 
+ * Hỗ trợ 2 chế độ:
+ * - LAN Mode: P2P thuần túy - PIN được gửi qua mạng LAN
+ * - Internet Mode: P2P Hybrid - PIN được đăng ký với Signaling Server
+ * 
  * Security improvements:
  * - PIN messages được ký bằng ECDSA để chống forgery
  * - TLS encryption cho PIN transmission
@@ -28,18 +33,20 @@ public class PINCodeService {
     
     private static final int PIN_LENGTH = 6;
     private static final long DEFAULT_EXPIRY = 600000; // 10 phút
-    private static final int PIN_SERVER_PORT = 8887;   // Port để sync PIN giữa peers
+    private static final int PIN_SERVER_PORT = 10002;   // Cố định
     
     private final PeerInfo localPeer;
     private final PeerDiscovery peerDiscovery;
     private final SecurityManager securityManager;
+    private final int pinServerPort; // Port động
     private final Map<String, ShareSession> localSessions;  // PIN do mình tạo
     private final Map<String, ShareSession> globalSessions; // PIN từ tất cả peers
     
-    private org.example.p2psharefile.network.RelayClient relayClient; // Relay client để sync PIN qua Internet
-    
-    // Connection mode: true = P2P only (LAN), false = Relay only (Internet)
+    // Connection mode: true = P2P only (LAN), false = P2P Hybrid (Internet với signaling)
     private volatile boolean p2pOnlyMode = true;
+    
+    // Signaling Client cho P2P Hybrid mode
+    private SignalingClient signalingClient;
     
     private SSLServerSocket pinServer;
     private ExecutorService executorService;
@@ -58,16 +65,10 @@ public class PINCodeService {
         this.localPeer = localPeer;
         this.peerDiscovery = peerDiscovery;
         this.securityManager = securityManager;
+        this.pinServerPort = PIN_SERVER_PORT; // Cố định
         this.localSessions = new ConcurrentHashMap<>();
         this.globalSessions = new ConcurrentHashMap<>();
         this.listeners = new CopyOnWriteArrayList<>();
-    }
-    
-    /**
-     * Set RelayClient để sync PIN qua Internet
-     */
-    public void setRelayClient(org.example.p2psharefile.network.RelayClient relayClient) {
-        this.relayClient = relayClient;
     }
     
     /**
@@ -77,7 +78,7 @@ public class PINCodeService {
         if (running) return;
         
         running = true;
-        pinServer = securityManager.createSSLServerSocket(PIN_SERVER_PORT);
+        pinServer = securityManager.createSSLServerSocket(pinServerPort);
         executorService = Executors.newCachedThreadPool();
         
         // Thread lắng nghe PIN từ peer khác
@@ -86,7 +87,7 @@ public class PINCodeService {
         // Thread kiểm tra PIN hết hạn
         executorService.submit(this::checkExpiredPINs);
         
-        System.out.println("✓ PIN Code Service (TLS) đã khởi động trên port " + PIN_SERVER_PORT);
+        System.out.println("✓ PIN Code Service (TLS) đã khởi động trên port " + pinServerPort);
     }
     
     /**
@@ -100,7 +101,7 @@ public class PINCodeService {
                 pinServer.close();
             }
         } catch (IOException e) {
-            System.err.println("Lỗi khi đóng PIN server: " + e.getMessage());
+            System.err.println("⚠ Lỗi khi đóng PIN server: " + e.getMessage());
         }
         
         if (executorService != null) {
@@ -108,6 +109,14 @@ public class PINCodeService {
         }
         
         System.out.println("✓ PIN Code Service đã dừng");
+    }
+    
+    /**
+     * Set Signaling Client cho P2P Hybrid mode
+     */
+    public void setSignalingClient(SignalingClient client) {
+        this.signalingClient = client;
+        System.out.println("✓ PINCodeService đã kết nối với SignalingClient");
     }
     
     /**
@@ -133,19 +142,16 @@ public class PINCodeService {
         globalSessions.put(pin, session);
         
         System.out.println("✓ Đã tạo PIN: " + pin + " cho file: " + fileInfo.getFileName() + 
-                          " (Mode: " + (p2pOnlyMode ? "P2P" : "Relay") + ")");
+                          " (Chế độ: " + (p2pOnlyMode ? "P2P LAN" : "P2P Internet") + ")");
 
         if (p2pOnlyMode) {
-            // ===== P2P MODE: Chỉ gửi đến LAN peers =====
+            // Chế độ LAN: Gửi PIN đến tất cả peers qua TCP
             sendPINToAllPeers(session);
         } else {
-            // ===== RELAY MODE: Upload và tạo PIN trên relay (sync để đảm bảo PIN được tạo) =====
-            if (relayClient != null) {
-                // Upload synchronously để PIN có thể được tìm thấy ngay
-                uploadAndCreatePINOnRelaySync(session, fileInfo, expiryMillis);
-            } else {
-                System.err.println("⚠ Relay client chưa được kích hoạt!");
-            }
+            // Chế độ Internet: Đăng ký PIN với Signaling Server
+            registerPINWithSignalingServer(session, expiryMillis);
+            // Cũng gửi đến LAN peers nếu có
+            sendPINToAllPeers(session);
         }
         
         // Thông báo listeners
@@ -155,135 +161,160 @@ public class PINCodeService {
     }
     
     /**
-     * Upload file lên relay rồi tạo PIN (SYNC - đợi hoàn thành)
+     * Đăng ký PIN với Signaling Server (cho P2P Hybrid mode)
      */
-    private void uploadAndCreatePINOnRelaySync(ShareSession session, FileInfo fileInfo, long expiryMillis) {
+    private void registerPINWithSignalingServer(ShareSession session, long expiryMillis) {
+        if (signalingClient == null || !signalingClient.isConnected()) {
+            System.out.println("⚠ Signaling Server chưa kết nối, chỉ gửi PIN qua LAN");
+            return;
+        }
+        
         try {
-            // Nếu file đã có relayFileInfo thì dùng luôn
-            if (fileInfo.getRelayFileInfo() != null) {
-                System.out.println("📌 File đã có trên relay, tạo PIN ngay...");
-                sendPINToRelay(session, expiryMillis);
-                return;
+            // Tạo socket kết nối đến Signaling Server
+            SSLSocket socket = securityManager.createSSLSocket(
+                signalingClient.getServerHost(), 
+                signalingClient.getServerPort()
+            );
+            socket.connect(new InetSocketAddress(
+                signalingClient.getServerHost(), 
+                signalingClient.getServerPort()
+            ), 5000);
+            socket.setSoTimeout(10000);
+            socket.startHandshake();
+            
+            ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
+            ObjectInputStream ois = new ObjectInputStream(socket.getInputStream());
+            
+            // Tạo data để gửi
+            Map<String, Object> pinData = new HashMap<>();
+            pinData.put("pin", session.getPin());
+            pinData.put("owner", localPeer);
+            pinData.put("fileName", session.getFileInfo().getFileName());
+            pinData.put("fileSize", session.getFileInfo().getFileSize());
+            pinData.put("fileHash", session.getFileInfo().getFileHash());
+            pinData.put("expiryMs", expiryMillis);
+            
+            // Tạo signed message
+            SignedMessage registerMsg = createSignedMessage("REGISTER_PIN", pinData);
+            oos.writeObject(registerMsg);
+            oos.flush();
+            
+            // Nhận ACK
+            Object response = ois.readObject();
+            if (response instanceof SignedMessage) {
+                SignedMessage respMsg = (SignedMessage) response;
+                if ("ACK".equals(respMsg.getMessageType())) {
+                    System.out.println("✅ Đã đăng ký PIN với Signaling Server: " + session.getPin());
+                }
             }
             
-            // Upload file lên relay trước
-            java.io.File file = new java.io.File(fileInfo.getFilePath());
-            if (!file.exists()) {
-                System.err.println("❌ File không tồn tại: " + fileInfo.getFilePath());
-                return;
-            }
-            
-            System.out.println("📤 Upload file lên relay để tạo PIN: " + fileInfo.getFileName());
-            
-            org.example.p2psharefile.model.RelayUploadRequest request = 
-                new org.example.p2psharefile.model.RelayUploadRequest(
-                    localPeer.getPeerId(),
-                    localPeer.getDisplayName(),
-                    fileInfo.getFileName(),
-                    file.length(),
-                    fileInfo.getChecksum()
-                );
-            
-            // Upload SYNC (không dùng listener callback)
-            org.example.p2psharefile.model.RelayFileInfo relayFileInfo = 
-                relayClient.uploadFile(file, request, null);
-            
-            if (relayFileInfo != null) {
-                System.out.println("✅ Upload xong: " + relayFileInfo.getUploadId());
-                
-                // Lưu relayFileInfo vào fileInfo
-                fileInfo.setRelayFileInfo(relayFileInfo);
-                
-                // Đăng ký file để search được
-                relayClient.registerFileForSearch(relayFileInfo);
-                
-                // Tạo PIN trên relay
-                sendPINToRelay(session, expiryMillis);
-            } else {
-                System.err.println("❌ Upload thất bại, không thể tạo PIN trên relay");
-            }
+            socket.close();
             
         } catch (Exception e) {
-            System.err.println("❌ Lỗi upload/create PIN: " + e.getMessage());
-            e.printStackTrace();
+            System.err.println("⚠ Lỗi đăng ký PIN với Signaling Server: " + e.getMessage());
         }
     }
     
     /**
-     * Gửi PIN lên relay server
-     */
-    private void sendPINToRelay(ShareSession session, long expiryMillis) {
-        try {
-            org.example.p2psharefile.model.RelayFileInfo relayFileInfo = session.getFileInfo().getRelayFileInfo();
-            if (relayFileInfo == null) {
-                System.err.println("⚠ File chưa được upload lên relay, không thể tạo PIN qua relay");
-                return;
-            }
-            
-            boolean success = relayClient.createPIN(session.getPin(), relayFileInfo, expiryMillis);
-            if (success) {
-                System.out.println("✓ Đã gửi PIN lên relay server: " + session.getPin());
-            } else {
-                System.err.println("⚠ Không thể gửi PIN lên relay server");
-            }
-        } catch (Exception e) {
-            System.err.println("❌ Lỗi gửi PIN lên relay: " + e.getMessage());
-        }
-    }
-    
-    /**
-     * Tìm session bằng PIN (theo mode: P2P hoặc Relay)
+     * Tìm session bằng PIN
      */
     public ShareSession findByPIN(String pin) {
-        System.out.println("🔍 Tìm PIN: " + pin + " (Mode: " + (p2pOnlyMode ? "P2P" : "Relay") + ")");
+        System.out.println("🔍 Tìm PIN: " + pin + " (Chế độ: " + (p2pOnlyMode ? "P2P LAN" : "P2P Internet") + ")");
         
-        // Tìm trong local/global cache trước
+        // Bước 1: Tìm trong local/global cache
         ShareSession session = globalSessions.get(pin);
         if (session != null && !session.isExpired()) {
-            System.out.println("✓ Tìm thấy PIN trong cache local: " + pin);
+            System.out.println("✓ Tìm thấy PIN trong cache: " + pin);
             return session;
         }
         
-        if (p2pOnlyMode) {
-            // ===== P2P MODE: Chỉ tìm local =====
-            System.out.println("⚠ Không tìm thấy PIN trong mạng LAN: " + pin);
-            return null;
-        }
-        
-        // ===== RELAY MODE: Tìm trên relay server =====
-        if (relayClient != null) {
-            org.example.p2psharefile.model.RelayFileInfo relayFileInfo = relayClient.findPIN(pin);
-            if (relayFileInfo != null) {
-                // Tạo session từ relay info
-                FileInfo fileInfo = new FileInfo(
-                    relayFileInfo.getFileName(),
-                    relayFileInfo.getFileSize(),
-                    relayFileInfo.getDownloadUrl()
-                );
-                fileInfo.setChecksum(relayFileInfo.getFileHash());
-                fileInfo.setFileHash(relayFileInfo.getFileHash());
-                fileInfo.setRelayFileInfo(relayFileInfo);
-                
-                // Tạo PeerInfo cho sender (giả lập)
-                PeerInfo senderPeer = new PeerInfo(
-                    relayFileInfo.getSenderId() != null ? relayFileInfo.getSenderId() : "relay-" + relayFileInfo.getUploadId(),
-                    "relay",
-                    0,
-                    relayFileInfo.getSenderName() != null ? relayFileInfo.getSenderName() : "Relay User",
-                    null
-                );
-                
-                session = new ShareSession(pin, fileInfo, senderPeer, System.currentTimeMillis() + DEFAULT_EXPIRY);
-                
-                // Cache lại
+        // Bước 2: Nếu ở chế độ Internet, tìm trên Signaling Server
+        if (!p2pOnlyMode && signalingClient != null && signalingClient.isConnected()) {
+            session = lookupPINFromSignalingServer(pin);
+            if (session != null) {
+                // Cache lại để sử dụng sau
                 globalSessions.put(pin, session);
-                
-                System.out.println("✓ Tìm thấy PIN trên relay: " + pin + " -> " + fileInfo.getFileName());
                 return session;
             }
         }
         
-        System.out.println("⚠ Không tìm thấy PIN trên relay: " + pin);
+        System.out.println("⚠ Không tìm thấy PIN: " + pin);
+        return null;
+    }
+    
+    /**
+     * Tìm PIN từ Signaling Server
+     */
+    private ShareSession lookupPINFromSignalingServer(String pin) {
+        try {
+            System.out.println("🌐 Đang tìm PIN trên Signaling Server: " + pin);
+            
+            SSLSocket socket = securityManager.createSSLSocket(
+                signalingClient.getServerHost(), 
+                signalingClient.getServerPort()
+            );
+            socket.connect(new InetSocketAddress(
+                signalingClient.getServerHost(), 
+                signalingClient.getServerPort()
+            ), 5000);
+            socket.setSoTimeout(10000);
+            socket.startHandshake();
+            
+            ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
+            ObjectInputStream ois = new ObjectInputStream(socket.getInputStream());
+            
+            // Gửi LOOKUP_PIN request
+            SignedMessage lookupMsg = createSignedMessage("LOOKUP_PIN", pin);
+            oos.writeObject(lookupMsg);
+            oos.flush();
+            
+            // Nhận response
+            Object response = ois.readObject();
+            socket.close();
+            
+            if (response instanceof SignedMessage) {
+                SignedMessage respMsg = (SignedMessage) response;
+                
+                if ("PIN_FOUND".equals(respMsg.getMessageType())) {
+                    // Chuyển đổi response thành ShareSession
+                    Object payload = respMsg.getPayload();
+                    if (payload instanceof org.example.p2psharefile.signaling.SignalingServer.SharePINInfo) {
+                        org.example.p2psharefile.signaling.SignalingServer.SharePINInfo pinInfo = 
+                            (org.example.p2psharefile.signaling.SignalingServer.SharePINInfo) payload;
+                        
+                        // Tạo FileInfo từ PIN info
+                        FileInfo fileInfo = new FileInfo(
+                            pinInfo.getFileName(),
+                            pinInfo.getFileSize(),
+                            "" // Path sẽ được lấy từ owner
+                        );
+                        fileInfo.setFileHash(pinInfo.getFileHash());
+                        
+                        // Tạo ShareSession
+                        ShareSession session = new ShareSession(
+                            pin, 
+                            fileInfo, 
+                            pinInfo.getOwner(), 
+                            pinInfo.getExpiresAt()
+                        );
+                        
+                        System.out.println("✅ Tìm thấy PIN trên Signaling Server: " + pin);
+                        System.out.println("   📁 File: " + pinInfo.getFileName());
+                        System.out.println("   👤 Chủ sở hữu: " + pinInfo.getOwner().getDisplayName());
+                        
+                        return session;
+                    }
+                } else if ("PIN_NOT_FOUND".equals(respMsg.getMessageType())) {
+                    System.out.println("⚠ PIN không tìm thấy trên Signaling Server");
+                } else if ("PIN_EXPIRED".equals(respMsg.getMessageType())) {
+                    System.out.println("⚠ PIN đã hết hạn trên Signaling Server");
+                }
+            }
+            
+        } catch (Exception e) {
+            System.err.println("⚠ Lỗi tìm PIN trên Signaling Server: " + e.getMessage());
+        }
+        
         return null;
     }
     
@@ -328,7 +359,7 @@ public class PINCodeService {
     }
     
     /**
-     * Gửi PIN đến tất cả LAN peers (bỏ qua Internet/relay peers)
+     * Gửi PIN đến tất cả peers
      */
     private void sendPINToAllPeers(ShareSession session) {
         if (peerDiscovery == null) {
@@ -338,22 +369,22 @@ public class PINCodeService {
 
         List<PeerInfo> peers = peerDiscovery.getDiscoveredPeers();
         
-        // Lọc chỉ lấy LAN peers (private IP)
-        List<PeerInfo> lanPeers = new ArrayList<>();
+        // Lọc peer hợp lệ
+        List<PeerInfo> validPeers = new ArrayList<>();
         for (PeerInfo peer : peers) {
-            if (!peer.getPeerId().equals(localPeer.getPeerId()) && isPrivateIP(peer.getIpAddress())) {
-                lanPeers.add(peer);
+            if (!peer.getPeerId().equals(localPeer.getPeerId())) {
+                validPeers.add(peer);
             }
         }
         
-        if (lanPeers.isEmpty()) {
-            System.out.println("✓ PIN đã được gửi lên relay server, không có LAN peer nào");
+        if (validPeers.isEmpty()) {
+            System.out.println("✓ PIN đã tạo, nhưng không có peer nào để gửi");
             return;
         }
         
-        System.out.println("📡 Gửi PIN: " + session.getPin() + " đến " + lanPeers.size() + " LAN peer(s)");
+        System.out.println("📡 Gửi PIN: " + session.getPin() + " đến " + validPeers.size() + " peer(s)");
 
-        for (PeerInfo peer : lanPeers) {
+        for (PeerInfo peer : validPeers) {
             sendPINToPeerTcp(session, peer);
         }
     }
@@ -362,7 +393,7 @@ public class PINCodeService {
      * Kiểm tra IP có phải private IP (LAN) không
      */
     private boolean isPrivateIP(String ip) {
-        if (ip == null || ip.equals("relay")) return false;
+        if (ip == null) return false;
         
         try {
             String[] parts = ip.split("\\.");
@@ -550,11 +581,11 @@ public class PINCodeService {
     
     /**
      * Set connection mode
-     * @param p2pOnly true = P2P only (LAN), false = Relay only (Internet)
+     * @param p2pOnly true = P2P only (LAN), false = P2P Hybrid (Internet với signaling)
      */
     public void setP2POnlyMode(boolean p2pOnly) {
         this.p2pOnlyMode = p2pOnly;
-        System.out.println("🔧 PINCodeService mode: " + (p2pOnly ? "P2P (LAN)" : "Relay (Internet)"));
+        System.out.println("🔧 PINCodeService mode: " + (p2pOnly ? "P2P (LAN)" : "P2P Hybrid (Internet)"));
     }
     
     /**
@@ -591,6 +622,19 @@ public class PINCodeService {
             } catch (Exception e) {
                 System.err.println("Lỗi trong listener: " + e.getMessage());
             }
+        }
+    }
+    
+    /**
+     * Tạo signed message cho giao tiếp với Signaling Server
+     */
+    private SignedMessage createSignedMessage(String type, Object payload) {
+        try {
+            String signature = securityManager.signMessage(type + payload.toString());
+            return new SignedMessage(type, localPeer.getPeerId(), signature, payload);
+        } catch (Exception e) {
+            System.err.println("❌ Lỗi ký message: " + e.getMessage());
+            return new SignedMessage(type, localPeer.getPeerId(), "", payload);
         }
     }
 }

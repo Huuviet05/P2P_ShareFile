@@ -14,7 +14,7 @@ import javafx.util.Duration;
 import org.example.p2psharefile.model.*;
 import org.example.p2psharefile.service.P2PService;
 import org.example.p2psharefile.service.PreviewGenerator;
-import org.example.p2psharefile.network.RelayClient;
+import org.example.p2psharefile.network.ChunkedFileTransferService;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 
@@ -91,6 +91,23 @@ public class MainController implements P2PService.P2PServiceListener {
     @FXML private Label downloadSizeLabel;
     @FXML private Label downloadTimeLabel;
     
+    // Global Transfer Progress (Footer - Modern Design)
+    @FXML private HBox globalTransferBox;
+    @FXML private Label globalTransferIcon;
+    @FXML private Label globalTransferFileName;
+    @FXML private Label globalTransferPercent;
+    @FXML private Label globalTransferSpeed;
+    @FXML private ProgressBar globalTransferProgress;
+    @FXML private Label globalTransferSize;
+    @FXML private Label globalTransferEta;
+    @FXML private Label globalChunkInfo;
+    @FXML private Label globalTransferStatus;
+    @FXML private Button globalPauseBtn;
+    @FXML private Button globalResumeBtn;
+    @FXML private Button globalCancelBtn;
+    @FXML private Label footerStatusLabel;
+    @FXML private Label footerTransferCount;
+    
     // Other
     @FXML private TextArea logTextArea;
     @FXML private Label logLabel;
@@ -103,6 +120,7 @@ public class MainController implements P2PService.P2PServiceListener {
     // ========== Data ==========
     
     private P2PService p2pService;
+    private int customPort = 0; // Port tùy chỉnh từ command line (0 = auto)
     private ObservableList<PeerInfo> peerList;
     private ObservableList<FileInfo> sharedFilesList;
     private ObservableList<String> sharedFilesDisplay;
@@ -110,7 +128,7 @@ public class MainController implements P2PService.P2PServiceListener {
     
     private String downloadDirectory = System.getProperty("user.home") + "/Downloads/";
     
-    // Connection Mode: true = P2P only, false = Relay only
+    // Connection Mode: true = P2P only (LAN), false = P2P Hybrid (Internet)
     private boolean isP2PMode = true;
     
     // PIN-related
@@ -119,8 +137,21 @@ public class MainController implements P2PService.P2PServiceListener {
     
     // Download tracking
     private volatile boolean isDownloading = false;
-    private RelayFileInfo currentDownloadFileInfo = null;
+    private volatile boolean isPaused = false;
     private File currentDownloadDestination = null;
+    
+    /**
+     * Setter để nhận port tùy chỉnh từ MainApplication
+     */
+    public void setCustomPort(int port) {
+        this.customPort = port;
+        System.out.println("🔧 MainController nhận port tùy chỉnh: " + port);
+    }
+    private java.util.concurrent.Future<?> currentTransferTask = null;
+    
+    // Chunked transfer tracking
+    private TransferState currentTransferState = null;
+    private Timeline transferProgressTimeline = null;
     
     /**
      * Class để hiển thị kết quả tìm kiếm
@@ -190,7 +221,7 @@ public class MainController implements P2PService.P2PServiceListener {
                     downloadButton.setDisable(!hasSelection || !isServiceReady);
                 }
                 
-                // Preview: luôn enable nếu có selection (relay sẽ hiển thị info dialog)
+                // Preview: luôn enable nếu có selection
                 if (previewButton != null) {
                     previewButton.setDisable(!hasSelection || !isServiceReady);
                 }
@@ -223,15 +254,12 @@ public class MainController implements P2PService.P2PServiceListener {
         try {
             String displayName = "Peer_" + System.getProperty("user.name");
             
-            // Port = 0 nghĩa là hệ thống tự động chọn port trống
-            int port = 0;
+            // Sử dụng port tùy chỉnh từ command line (nếu có)
+            int port = customPort;
             
             // Tạo và khởi động P2P Service
             p2pService = new P2PService(displayName, port);
             p2pService.addListener(this);
-            
-            // 🌐 ENABLE RELAY: Tự động khởi động relay server và client
-            org.example.p2psharefile.relay.RelayStarter.startRelayInBackground(p2pService);
             
             p2pService.start();
             
@@ -246,7 +274,7 @@ public class MainController implements P2PService.P2PServiceListener {
             receiveButton.setDisable(false);
             
             log("✅ Đã tự động kết nối!");
-            log("📡 Port: " + actualPort);
+            log("📡 Port: " + actualPort + (customPort == 0 ? " (auto)" : " (custom)"));
             log("🔐 Security: TLS + AES-256 + ECDSA");
             
         } catch (Exception e) {
@@ -263,9 +291,6 @@ public class MainController implements P2PService.P2PServiceListener {
             p2pService.stop();
             p2pService = null;
         }
-        
-        // Dừng Relay Server
-        org.example.p2psharefile.relay.RelayStarter.stopRelay();
         
         // Xóa tên peer khỏi header
         peerNameLabel.setText("");
@@ -325,7 +350,7 @@ public class MainController implements P2PService.P2PServiceListener {
             }
         });
         
-        // Relay mode handler
+        // P2P Hybrid (Internet) mode handler
         relayModeToggle.setOnAction(e -> {
             if (relayModeToggle.isSelected()) {
                 switchToRelayMode();
@@ -356,7 +381,7 @@ public class MainController implements P2PService.P2PServiceListener {
     }
     
     /**
-     * Chuyển sang chế độ Relay (Internet)
+     * Chuyển sang chế độ P2P Hybrid (Internet với signaling server)
      */
     private void switchToRelayMode() {
         isP2PMode = false;
@@ -368,10 +393,10 @@ public class MainController implements P2PService.P2PServiceListener {
         
         // Cập nhật UI
         updateModeUI();
-        log("🌐 Đã chuyển sang chế độ Relay (Kết nối Internet)");
-        log("   • Tìm kiếm: Qua relay server");
-        log("   • PIN Share: Qua Internet");
-        log("   • Preview: Không hỗ trợ (cần download)");
+        log("🌐 Đã chuyển sang chế độ P2P Hybrid (Internet)");
+        log("   • Kết nối: Qua signaling server");
+        log("   • Truyền file: P2P trực tiếp");
+        log("   • Preview: Hỗ trợ đầy đủ");
     }
     
     /**
@@ -403,16 +428,17 @@ public class MainController implements P2PService.P2PServiceListener {
                     previewButton.setDisable(selected == null);
                 }
             } else {
-                // Relay mode: Preview disabled, search qua relay
+                // P2P Hybrid mode: Preview enabled, search qua signaling server
                 // Show as P2P over Internet in UI
                 statusLabel.setText("P2P (Internet)");
                 statusLabel.setStyle("-fx-text-fill: #3b82f6; -fx-font-weight: bold; -fx-font-size: 14;");
                 if (statusDot != null) {
                     statusDot.setStyle("-fx-text-fill: #3b82f6; -fx-font-size: 20;");
                 }
-                // Disable preview button trong Relay mode
+                // Preview vẫn hoạt động trong P2P Hybrid mode
                 if (previewButton != null) {
-                    previewButton.setDisable(true);
+                    SearchResultItem selected = searchResultsListView.getSelectionModel().getSelectedItem();
+                    previewButton.setDisable(selected == null);
                 }
             }
         });
@@ -517,15 +543,32 @@ public class MainController implements P2PService.P2PServiceListener {
         if (saveDir != null) {
             downloadDirectory = saveDir.getAbsolutePath();
             
-            // Hiển thị download progress UI
-            showDownloadProgress(selected.getFileInfo().getFileName());
-            
-            p2pService.downloadFile(
-                selected.getPeerInfo(),
-                selected.getFileInfo(),
-                downloadDirectory
+            // Tạo TransferState cho global progress UI
+            FileInfo fileInfo = selected.getFileInfo();
+            TransferState state = new TransferState(
+                fileInfo.getFileName(), 
+                fileInfo.getFilePath(), 
+                fileInfo.getFileSize()
             );
-            log("📥 Đang download: " + selected.getFileInfo().getFileName());
+            state.setSaveDirectory(downloadDirectory);
+            state.start();
+            
+            // Hiển thị global progress UI (footer)
+            showGlobalTransferProgress(state);
+            
+            // Hiển thị download progress UI (cũ - trong tab)
+            showDownloadProgress(fileInfo.getFileName());
+            
+            // Bắt đầu download với chunked listener
+            p2pService.downloadFileChunked(
+                selected.getPeerInfo(),
+                fileInfo,
+                downloadDirectory,
+                createChunkedTransferListener()
+            );
+            
+            log("📥 Đang download (chunked): " + fileInfo.getFileName());
+            log("   📦 Chunk size: " + (TransferState.DEFAULT_CHUNK_SIZE / 1024) + "KB");
         }
     }
     
@@ -644,9 +687,8 @@ public class MainController implements P2PService.P2PServiceListener {
      */
     @FXML
     private void handlePauseDownload() {
-        RelayClient relayClient = p2pService.getRelayClient();
-        if (relayClient != null && isDownloading) {
-            relayClient.pauseDownload();
+        if (isDownloading && currentTransferTask != null && !currentTransferTask.isCancelled()) {
+            isPaused = true;
             log("⏸ Đã tạm dừng download");
             
             Platform.runLater(() -> {
@@ -667,9 +709,8 @@ public class MainController implements P2PService.P2PServiceListener {
      */
     @FXML
     private void handleResumeDownload() {
-        RelayClient relayClient = p2pService.getRelayClient();
-        if (relayClient != null && relayClient.isPaused()) {
-            relayClient.resumeDownload();
+        if (isPaused) {
+            isPaused = false;
             log("▶ Tiếp tục download");
             
             Platform.runLater(() -> {
@@ -690,9 +731,12 @@ public class MainController implements P2PService.P2PServiceListener {
      */
     @FXML
     private void handleCancelDownload() {
-        RelayClient relayClient = p2pService.getRelayClient();
-        if (relayClient != null && isDownloading) {
-            relayClient.cancelDownload();
+        if (isDownloading) {
+            if (currentTransferTask != null) {
+                currentTransferTask.cancel(true);
+            }
+            isDownloading = false;
+            isPaused = false;
             log("✕ Đã hủy download");
             hideDownloadProgress();
         }
@@ -711,12 +755,6 @@ public class MainController implements P2PService.P2PServiceListener {
         
         FileInfo fileInfo = selected.getFileInfo();
         PeerInfo peerInfo = selected.getPeerInfo();
-        
-        // Kiểm tra nếu peer là relay -> hiển thị thông tin cơ bản
-        if ("relay".equals(peerInfo.getIpAddress())) {
-            showRelayFileInfoDialog(fileInfo, peerInfo);
-            return;
-        }
         
         // Disable button tạm thời
         previewButton.setDisable(true);
@@ -1063,112 +1101,6 @@ public class MainController implements P2PService.P2PServiceListener {
     }
     
     /**
-     * Hiển thị dialog thông tin chi tiết file từ Relay Server
-     * (Relay mode không hỗ trợ preview trực tiếp, chỉ hiển thị thông tin)
-     */
-    private void showRelayFileInfoDialog(FileInfo fileInfo, PeerInfo peerInfo) {
-        Dialog<Void> dialog = new Dialog<>();
-        dialog.setTitle("📋 Thông tin File - " + fileInfo.getFileName());
-        dialog.setHeaderText(null);
-        
-        VBox content = new VBox(16);
-        content.setPadding(new javafx.geometry.Insets(24));
-        content.setStyle("-fx-background-color: white;");
-        
-        // Header với icon
-        HBox header = new HBox(12);
-        header.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
-        Label iconLabel = new Label(getFileIcon(fileInfo.getFileName()));
-        iconLabel.setStyle("-fx-font-size: 48px;");
-        
-        VBox headerText = new VBox(4);
-        Label fileNameLabel = new Label(fileInfo.getFileName());
-        fileNameLabel.setStyle("-fx-font-weight: bold; -fx-font-size: 16px; -fx-text-fill: #1f2937;");
-        fileNameLabel.setWrapText(true);
-        
-        Label sourceLabel = new Label("📡 Từ Relay Server");
-        sourceLabel.setStyle("-fx-font-size: 12px; -fx-text-fill: #3b82f6;");
-        
-        headerText.getChildren().addAll(fileNameLabel, sourceLabel);
-        header.getChildren().addAll(iconLabel, headerText);
-        content.getChildren().add(header);
-        
-        // Separator
-        Separator sep = new Separator();
-        sep.setStyle("-fx-padding: 8 0;");
-        content.getChildren().add(sep);
-        
-        // Thông tin chi tiết
-        VBox infoSection = new VBox(10);
-        infoSection.setStyle("-fx-padding: 16; -fx-background-color: #f8fafc; -fx-background-radius: 8;");
-        
-        // Kích thước file
-        HBox sizeRow = createInfoRow("📊 Kích thước", fileInfo.getFormattedSize());
-        infoSection.getChildren().add(sizeRow);
-        
-        // Người chia sẻ
-        HBox ownerRow = createInfoRow("👤 Người chia sẻ", peerInfo.getDisplayName());
-        infoSection.getChildren().add(ownerRow);
-        
-        // Loại file
-        String fileType = getFileTypeName(fileInfo.getFileName());
-        HBox typeRow = createInfoRow("🏷️ Loại file", fileType);
-        infoSection.getChildren().add(typeRow);
-        
-        // Hash (nếu có)
-        if (fileInfo.getFileHash() != null && !fileInfo.getFileHash().isEmpty()) {
-            String shortHash = fileInfo.getFileHash().length() > 20 
-                ? fileInfo.getFileHash().substring(0, 20) + "..." 
-                : fileInfo.getFileHash();
-            HBox hashRow = createInfoRow("🔐 Hash", shortHash);
-            infoSection.getChildren().add(hashRow);
-        }
-        
-        // RelayFileInfo nếu có
-        if (fileInfo.getRelayFileInfo() != null) {
-            RelayFileInfo relayInfo = fileInfo.getRelayFileInfo();
-            if (relayInfo.getUploadId() != null) {
-                String shortId = relayInfo.getUploadId().length() > 12 
-                    ? relayInfo.getUploadId().substring(0, 12) + "..." 
-                    : relayInfo.getUploadId();
-                HBox idRow = createInfoRow("🆔 File ID", shortId);
-                infoSection.getChildren().add(idRow);
-            }
-        }
-        
-        content.getChildren().add(infoSection);
-        
-        // Note về Relay mode
-        VBox noteBox = new VBox(8);
-        noteBox.setStyle("-fx-padding: 12; -fx-background-color: #eff6ff; -fx-background-radius: 8; -fx-border-color: #bfdbfe; -fx-border-radius: 8;");
-        
-        Label noteTitle = new Label("ℹ️ Chế độ Relay");
-        noteTitle.setStyle("-fx-font-weight: bold; -fx-font-size: 12px; -fx-text-fill: #1d4ed8;");
-        
-        Label noteText = new Label(
-            "• Xem trước nội dung không khả dụng trong chế độ Relay\n" +
-            "• File được truyền an toàn qua HTTPS\n" +
-            "• Nhấn 'Tải về' để download file về máy"
-        );
-        noteText.setWrapText(true);
-        noteText.setStyle("-fx-font-size: 11px; -fx-text-fill: #3b82f6;");
-        
-        noteBox.getChildren().addAll(noteTitle, noteText);
-        content.getChildren().add(noteBox);
-        
-        dialog.getDialogPane().setContent(content);
-        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK);
-        dialog.getDialogPane().setPrefSize(480, 420);
-        
-        // Style cho button
-        dialog.getDialogPane().lookupButton(ButtonType.OK).setStyle(
-            "-fx-background-color: #3b82f6; -fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 8 24;"
-        );
-        
-        dialog.showAndWait();
-    }
-    
-    /**
      * Tạo một hàng thông tin với label và value
      */
     private HBox createInfoRow(String label, String value) {
@@ -1378,9 +1310,9 @@ public class MainController implements P2PService.P2PServiceListener {
                 file.getAbsolutePath()
             );
             
-            // Create PIN code for this file (trong background thread vì có thể phải upload lên relay)
+            // Create PIN code for this file
             final FileInfo finalFileInfo = fileInfo;
-            log("⏳ Đang tạo mã PIN" + (isP2PMode ? "" : " (đang upload lên relay...)"));
+            log("⏳ Đang tạo mã PIN...");
             
             new Thread(() -> {
                 try {
@@ -1415,7 +1347,7 @@ public class MainController implements P2PService.P2PServiceListener {
                                 "Mã: " + session.getPin() + "\n" +
                                 "File: " + finalFileInfo.getFileName() + "\n" +
                                 "Hết hạn sau: 10 phút\n\n" +
-                                (isP2PMode ? "Mã này đã được gửi tới tất cả peers." : "Mã này đã được lưu trên relay server."));
+                                "Mã này đã được gửi tới tất cả peers.");
                         } else {
                             showError("Không thể tạo mã PIN");
                         }
@@ -1686,31 +1618,42 @@ public class MainController implements P2PService.P2PServiceListener {
         double speed = bytesTransferred > 0 ? bytesTransferred / 1.0 : 0; // bytes/s ước tính
         long etaSeconds = totalBytes > 0 && speed > 0 ? (long)((totalBytes - bytesTransferred) / speed) : 0;
         
-        // Cập nhật progress UI
+        // Cập nhật progress UI (cũ - trong tab Tìm)
         if (isDownloading) {
             updateDownloadProgress(bytesTransferred, totalBytes, speed, etaSeconds);
         }
         
+        // Cập nhật global progress UI (mới - footer) nếu có currentTransferState
+        if (currentTransferState != null) {
+            updateGlobalTransferProgress(currentTransferState);
+        }
+        
         Platform.runLater(() -> {
             int percent = (int) ((bytesTransferred * 100) / totalBytes);
-            log("⏳ " + fileName + ": " + percent + "%");
+            // Chỉ log mỗi 10%
+            if (percent % 10 == 0) {
+                log("⏳ " + fileName + ": " + percent + "%");
+            }
         });
     }
     
     @Override
     public void onTransferComplete(String fileName, File file) {
         Platform.runLater(() -> {
-            // Ẩn progress UI
+            // Ẩn progress UI (cũ)
             hideDownloadProgress();
+            
+            // Reset global progress UI (mới)
+            hideGlobalTransferProgress();
             
             log("✅ Download hoàn tất: " + fileName);
             if (isP2PMode) {
-                log("  🔓 Đã giải mã AES-256 và giải nén");
+                log("  🔓 Đã giải mã AES-256 và giải nén (LAN)");
             } else {
-                log("  🌐 Đã tải từ relay server");
+                log("  🌐 Đã giải mã AES-256 và giải nén (Internet)");
             }
             log("  💾 Đã lưu: " + file.getAbsolutePath());
-            String modeInfo = isP2PMode ? "Đã giải mã & giải nén (P2P)" : "Đã tải từ relay server";
+            String modeInfo = isP2PMode ? "Đã giải mã & giải nén (P2P LAN)" : "Đã giải mã & giải nén (P2P Internet)";
             showInfo("Download thành công!\n\nFile: " + fileName + 
                     "\n" + modeInfo + "\nLưu tại: " + file.getAbsolutePath());
         });
@@ -1719,8 +1662,11 @@ public class MainController implements P2PService.P2PServiceListener {
     @Override
     public void onTransferError(String fileName, Exception e) {
         Platform.runLater(() -> {
-            // Ẩn progress UI
+            // Ẩn progress UI (cũ)
             hideDownloadProgress();
+            
+            // Reset global progress UI (mới)
+            hideGlobalTransferProgress();
             
             log("❌ Lỗi download " + fileName + ": " + e.getMessage());
             showError("Lỗi khi download: " + e.getMessage());
@@ -1729,7 +1675,7 @@ public class MainController implements P2PService.P2PServiceListener {
     
     @Override
     public void onServiceStarted() {
-        // Không cập nhật statusLabel ở đây vì đã set theo mode (P2P/Relay)
+        // Không cập nhật statusLabel ở đây vì đã set theo mode (P2P LAN/P2P Internet)
         // Chỉ log thông báo
         log("✅ Service đã khởi động");
     }
@@ -1775,5 +1721,350 @@ public class MainController implements P2PService.P2PServiceListener {
             saveLocationLabel.setText(saveDir.getName());
             log("📂 Đổi thư mục lưu: " + downloadDirectory);
         }
+    }
+    
+    // ========== Global Transfer Progress Methods (Footer) ==========
+    
+    /**
+     * Hiển thị thanh tiến trình download ở footer (khi bắt đầu download)
+     */
+    private void showGlobalTransferProgress(TransferState state) {
+        Platform.runLater(() -> {
+            currentTransferState = state;
+            
+            if (globalTransferFileName != null) {
+                globalTransferFileName.setText(state.getFileName());
+            }
+            if (globalTransferIcon != null) {
+                globalTransferIcon.setText("⬇");
+            }
+            if (globalTransferProgress != null) {
+                globalTransferProgress.setProgress(0);
+            }
+            if (globalTransferPercent != null) {
+                globalTransferPercent.setText("0%");
+            }
+            if (globalTransferStatus != null) {
+                globalTransferStatus.setText("Đang khởi tạo...");
+            }
+            if (globalChunkInfo != null) {
+                globalChunkInfo.setText("Chunk: 0/" + state.getTotalChunks());
+            }
+            if (globalTransferSpeed != null) {
+                globalTransferSpeed.setText("");
+            }
+            if (globalTransferSize != null) {
+                globalTransferSize.setText("0 B / " + formatBytes(state.getFileSize()));
+            }
+            if (globalTransferEta != null) {
+                globalTransferEta.setText("");
+            }
+            
+            // Enable các nút điều khiển
+            if (globalPauseBtn != null) {
+                globalPauseBtn.setDisable(false);
+                globalPauseBtn.setVisible(true);
+                globalPauseBtn.setManaged(true);
+            }
+            if (globalResumeBtn != null) {
+                globalResumeBtn.setVisible(false);
+                globalResumeBtn.setManaged(false);
+            }
+            if (globalCancelBtn != null) {
+                globalCancelBtn.setDisable(false);
+            }
+            
+            // Bắt đầu timeline cập nhật progress
+            startTransferProgressTimeline();
+        });
+    }
+    
+    /**
+     * Cập nhật thanh tiến trình download ở footer
+     */
+    private void updateGlobalTransferProgress(TransferState state) {
+        Platform.runLater(() -> {
+            if (globalTransferBox == null || state == null) return;
+            
+            double progress = state.getProgress();
+            int percent = state.getProgressPercent();
+            long bytesTransferred = state.getBytesTransferred();
+            long totalBytes = state.getFileSize();
+            double speed = state.getTransferSpeed();
+            long eta = state.getEstimatedTimeRemaining();
+            
+            if (globalTransferProgress != null) {
+                globalTransferProgress.setProgress(progress);
+            }
+            if (globalTransferPercent != null) {
+                globalTransferPercent.setText(percent + "%");
+            }
+            if (globalTransferSize != null) {
+                globalTransferSize.setText(formatBytes(bytesTransferred) + " / " + formatBytes(totalBytes));
+            }
+            if (globalTransferSpeed != null && speed > 0) {
+                globalTransferSpeed.setText(formatBytes((long) speed) + "/s");
+            }
+            if (globalTransferEta != null && eta > 0) {
+                long mins = eta / 60;
+                long secs = eta % 60;
+                globalTransferEta.setText(String.format("%d:%02d còn lại", mins, secs));
+            }
+            if (globalChunkInfo != null) {
+                globalChunkInfo.setText("Chunk: " + state.getReceivedChunkCount() + "/" + state.getTotalChunks());
+            }
+            if (globalTransferStatus != null) {
+                switch (state.getStatus()) {
+                    case IN_PROGRESS:
+                        globalTransferStatus.setText("Đang tải...");
+                        break;
+                    case PAUSED:
+                        globalTransferStatus.setText("Đã tạm dừng");
+                        break;
+                    case COMPLETED:
+                        globalTransferStatus.setText("Hoàn tất!");
+                        break;
+                    case FAILED:
+                        globalTransferStatus.setText("Lỗi: " + state.getErrorMessage());
+                        break;
+                    case CANCELLED:
+                        globalTransferStatus.setText("Đã hủy");
+                        break;
+                    default:
+                        globalTransferStatus.setText("");
+                }
+            }
+        });
+    }
+    
+    /**
+     * Reset thanh tiến trình về trạng thái chờ (không ẩn)
+     */
+    private void hideGlobalTransferProgress() {
+        Platform.runLater(() -> {
+            currentTransferState = null;
+            stopTransferProgressTimeline();
+            
+            // Reset về trạng thái ban đầu
+            if (globalTransferFileName != null) {
+                globalTransferFileName.setText("Sẵn sàng");
+            }
+            if (globalTransferProgress != null) {
+                globalTransferProgress.setProgress(0);
+            }
+            if (globalTransferPercent != null) {
+                globalTransferPercent.setText("0%");
+            }
+            if (globalTransferStatus != null) {
+                globalTransferStatus.setText("");
+            }
+            if (globalChunkInfo != null) {
+                globalChunkInfo.setText("Kéo thả file để chia sẻ");
+            }
+            if (globalTransferIcon != null) {
+                globalTransferIcon.setText("⬇");
+            }
+            if (globalTransferSpeed != null) {
+                globalTransferSpeed.setText("");
+            }
+            if (globalTransferSize != null) {
+                globalTransferSize.setText("");
+            }
+            if (globalTransferEta != null) {
+                globalTransferEta.setText("");
+            }
+            
+            // Disable các nút điều khiển
+            if (globalPauseBtn != null) {
+                globalPauseBtn.setDisable(true);
+                globalPauseBtn.setVisible(true);
+                globalPauseBtn.setManaged(true);
+            }
+            if (globalResumeBtn != null) {
+                globalResumeBtn.setVisible(false);
+                globalResumeBtn.setManaged(false);
+            }
+            if (globalCancelBtn != null) {
+                globalCancelBtn.setDisable(true);
+            }
+        });
+    }
+    
+    /**
+     * Bắt đầu timeline cập nhật progress
+     */
+    private void startTransferProgressTimeline() {
+        stopTransferProgressTimeline();
+        
+        transferProgressTimeline = new Timeline(
+            new KeyFrame(Duration.millis(100), e -> {
+                if (currentTransferState != null) {
+                    updateGlobalTransferProgress(currentTransferState);
+                }
+            })
+        );
+        transferProgressTimeline.setCycleCount(Timeline.INDEFINITE);
+        transferProgressTimeline.play();
+    }
+    
+    /**
+     * Dừng timeline cập nhật progress
+     */
+    private void stopTransferProgressTimeline() {
+        if (transferProgressTimeline != null) {
+            transferProgressTimeline.stop();
+            transferProgressTimeline = null;
+        }
+    }
+    
+    /**
+     * Xử lý khi nhấn nút Pause ở footer
+     */
+    @FXML
+    private void handleGlobalPause() {
+        if (currentTransferState != null && p2pService != null) {
+            currentTransferState.pause();
+            
+            Platform.runLater(() -> {
+                if (globalPauseBtn != null) {
+                    globalPauseBtn.setVisible(false);
+                    globalPauseBtn.setManaged(false);
+                }
+                if (globalResumeBtn != null) {
+                    globalResumeBtn.setVisible(true);
+                    globalResumeBtn.setManaged(true);
+                }
+                if (globalTransferStatus != null) {
+                    globalTransferStatus.setText("Đã tạm dừng");
+                }
+            });
+            
+            log("⏸ Đã tạm dừng download: " + currentTransferState.getFileName());
+        }
+    }
+    
+    /**
+     * Xử lý khi nhấn nút Resume ở footer
+     */
+    @FXML
+    private void handleGlobalResume() {
+        if (currentTransferState != null && p2pService != null) {
+            currentTransferState.resume();
+            
+            Platform.runLater(() -> {
+                if (globalResumeBtn != null) {
+                    globalResumeBtn.setVisible(false);
+                    globalResumeBtn.setManaged(false);
+                }
+                if (globalPauseBtn != null) {
+                    globalPauseBtn.setVisible(true);
+                    globalPauseBtn.setManaged(true);
+                }
+                if (globalTransferStatus != null) {
+                    globalTransferStatus.setText("Đang tiếp tục...");
+                }
+            });
+            
+            log("▶ Tiếp tục download: " + currentTransferState.getFileName() + 
+                " (từ chunk " + currentTransferState.getReceivedChunkCount() + "/" + 
+                currentTransferState.getTotalChunks() + ")");
+        }
+    }
+    
+    /**
+     * Xử lý khi nhấn nút Cancel ở footer
+     */
+    @FXML
+    private void handleGlobalCancel() {
+        if (currentTransferState != null) {
+            String fileName = currentTransferState.getFileName();
+            currentTransferState.cancel();
+            
+            hideGlobalTransferProgress();
+            log("❌ Đã hủy download: " + fileName);
+        }
+    }
+    
+    /**
+     * Listener cho chunked transfer progress
+     */
+    private ChunkedFileTransferService.ChunkedTransferListener createChunkedTransferListener() {
+        return new ChunkedFileTransferService.ChunkedTransferListener() {
+            @Override
+            public void onProgress(TransferState state) {
+                updateGlobalTransferProgress(state);
+            }
+            
+            @Override
+            public void onChunkReceived(TransferState state, int chunkIndex) {
+                // Cập nhật chunk info
+                Platform.runLater(() -> {
+                    if (globalChunkInfo != null) {
+                        globalChunkInfo.setText("Chunk: " + state.getReceivedChunkCount() + "/" + 
+                            state.getTotalChunks() + " (vừa nhận: #" + chunkIndex + ")");
+                    }
+                });
+            }
+            
+            @Override
+            public void onComplete(TransferState state, File file) {
+                Platform.runLater(() -> {
+                    if (globalTransferStatus != null) {
+                        globalTransferStatus.setText("✅ Hoàn tất!");
+                    }
+                    if (globalTransferProgress != null) {
+                        globalTransferProgress.setProgress(1.0);
+                    }
+                    if (globalTransferPercent != null) {
+                        globalTransferPercent.setText("100%");
+                    }
+                    
+                    log("✅ Download hoàn tất: " + file.getAbsolutePath());
+                    showInfo("Download thành công: " + file.getName());
+                    
+                    // Ẩn sau 3 giây
+                    Timeline hideTimeline = new Timeline(
+                        new KeyFrame(Duration.seconds(3), e -> hideGlobalTransferProgress())
+                    );
+                    hideTimeline.play();
+                });
+            }
+            
+            @Override
+            public void onError(TransferState state, Exception e) {
+                Platform.runLater(() -> {
+                    if (globalTransferStatus != null) {
+                        globalTransferStatus.setText("❌ Lỗi: " + e.getMessage());
+                    }
+                    
+                    log("❌ Lỗi download: " + e.getMessage());
+                    showError("Lỗi download: " + e.getMessage());
+                    
+                    // Ẩn sau 5 giây
+                    Timeline hideTimeline = new Timeline(
+                        new KeyFrame(Duration.seconds(5), ev -> hideGlobalTransferProgress())
+                    );
+                    hideTimeline.play();
+                });
+            }
+            
+            @Override
+            public void onPaused(TransferState state) {
+                Platform.runLater(() -> {
+                    if (globalTransferStatus != null) {
+                        globalTransferStatus.setText("⏸ Đã tạm dừng");
+                    }
+                });
+            }
+            
+            @Override
+            public void onResumed(TransferState state) {
+                Platform.runLater(() -> {
+                    if (globalTransferStatus != null) {
+                        globalTransferStatus.setText("▶ Đang tiếp tục...");
+                    }
+                });
+            }
+        };
     }
 }

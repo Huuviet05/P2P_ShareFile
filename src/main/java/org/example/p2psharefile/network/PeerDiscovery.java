@@ -29,7 +29,7 @@ import java.util.concurrent.*;
  */
 public class PeerDiscovery {
 
-    private static final int DISCOVERY_PORT = 8888;
+    private static final int DISCOVERY_PORT = 10001; // Cố định cho discovery
     private static final int HEARTBEAT_INTERVAL = 5000; // 5 giây
     private static final int PEER_TIMEOUT = 15000; // 15 giây
     private static final int SCAN_INTERVAL = 10000; // 10 giây quét lại
@@ -37,7 +37,8 @@ public class PeerDiscovery {
 
     private final PeerInfo localPeer;
     private final SecurityManager securityManager;
-    private final Map<String, PeerInfo> discoveredPeers;
+    private final int discoveryPort; // Port cố định
+    private final Map<String, PeerInfo> discoveredPeers; // Key: PeerID
     private final Map<String, Socket> peerConnections; // Kết nối TCP với peer
     private final List<PeerDiscoveryListener> listeners;
 
@@ -45,7 +46,7 @@ public class PeerDiscovery {
     private ExecutorService executorService;
     private volatile boolean running = false;
     
-    // Mode: true = P2P only (LAN scan), false = Relay only (no LAN scan)
+    // Mode: true = P2P LAN (quét mạng cục bộ), false = P2P Internet (dùng Signaling Server)
     private volatile boolean p2pOnlyMode = true;
 
     public interface PeerDiscoveryListener {
@@ -56,6 +57,7 @@ public class PeerDiscovery {
     public PeerDiscovery(PeerInfo localPeer, SecurityManager securityManager) {
         this.localPeer = localPeer;
         this.securityManager = securityManager;
+        this.discoveryPort = DISCOVERY_PORT; // Cố định
         this.discoveredPeers = new ConcurrentHashMap<>();
         this.peerConnections = new ConcurrentHashMap<>();
         this.listeners = new CopyOnWriteArrayList<>();
@@ -70,13 +72,13 @@ public class PeerDiscovery {
         running = true;
 
         // Tạo SSLServerSocket để lắng nghe kết nối từ peer khác (TLS enabled)
-        serverSocket = securityManager.createSSLServerSocket(DISCOVERY_PORT);
+        serverSocket = securityManager.createSSLServerSocket(discoveryPort);
         serverSocket.setReuseAddress(true);
 
-        System.out.println("✓ Peer Discovery TLS đã khởi động trên port " + DISCOVERY_PORT);
-        System.out.println("  → Local Peer: " + localPeer.getDisplayName() +
+        System.out.println("✓ Peer Discovery TLS đã khởi động trên port " + discoveryPort);
+        System.out.println("  → Peer cục bộ: " + localPeer.getDisplayName() +
                 " (" + localPeer.getIpAddress() + ":" + localPeer.getPort() + ")");
-        System.out.println("  → Public Key: " + localPeer.getPublicKey().substring(0, 40) + "...");
+        System.out.println("  → Khóa công khai: " + localPeer.getPublicKey().substring(0, 40) + "...");
 
         executorService = Executors.newCachedThreadPool();
 
@@ -151,7 +153,7 @@ public class PeerDiscovery {
      * Lắng nghe kết nối từ peer khác
      */
     private void acceptPeerConnections() {
-        System.out.println("👂 Đang lắng nghe kết nối peer trên port " + DISCOVERY_PORT);
+        System.out.println("👂 Đang lắng nghe kết nối peer trên port " + discoveryPort);
 
         while (running) {
             try {
@@ -167,12 +169,12 @@ public class PeerDiscovery {
 
             } catch (SocketException e) {
                 if (running) {
-                    System.err.println("Socket error: " + e.getMessage());
+                    System.err.println("⚠ Lỗi Socket: " + e.getMessage());
                 }
                 break;
             } catch (IOException e) {
                 if (running) {
-                    System.err.println("Lỗi accept connection: " + e.getMessage());
+                    System.err.println("⚠ Lỗi chấp nhận kết nối: " + e.getMessage());
                 }
             }
         }
@@ -191,8 +193,9 @@ public class PeerDiscovery {
             String messageType = signedMsg.getMessageType();
             PeerInfo remotePeer = (PeerInfo) signedMsg.getPayload();
 
-            // Kiểm tra không phải chính mình
-            if (remotePeer.getPeerId().equals(localPeer.getPeerId())) {
+            // Kiểm tra không phải chính mình (chỉ loại khi trùng cả IP và port)
+            if (remotePeer.getIpAddress().equals(localPeer.getIpAddress()) &&
+                remotePeer.getPort() == localPeer.getPort()) {
                 socket.close();
                 return;
             }
@@ -210,12 +213,12 @@ public class PeerDiscovery {
 
             // ✅ VERIFY SIGNATURE
             if (!verifyPeerSignature(signedMsg, remotePeer)) {
-                System.err.println("❌ [Security] Invalid signature from peer: " + remotePeer.getDisplayName());
+                System.err.println("❌ [Bảo mật] Chữ ký không hợp lệ từ peer: " + remotePeer.getDisplayName());
                 socket.close();
                 return;
             }
             
-            System.out.println("✅ [Security] Signature verified for peer: " + remotePeer.getDisplayName());
+            System.out.println("✅ [Bảo mật] Đã xác minh chữ ký cho peer: " + remotePeer.getDisplayName());
 
             if ("JOIN".equals(messageType) || "HEARTBEAT".equals(messageType)) {
                 // Tạo signed response
@@ -235,7 +238,7 @@ public class PeerDiscovery {
 
         } catch (Exception e) {
             if (running) {
-                System.err.println("Lỗi xử lý peer connection: " + e.getMessage());
+                System.err.println("⚠ Lỗi xử lý kết nối peer: " + e.getMessage());
                 e.printStackTrace();
             }
         }
@@ -248,9 +251,9 @@ public class PeerDiscovery {
     private void scanNetwork() {
         while (running) {
             try {
-                // Chỉ quét mạng nếu đang ở P2P mode
+                // Chỉ quét mạng nếu đang ở P2P LAN mode
                 if (!p2pOnlyMode) {
-                    // Relay mode: không quét LAN, chờ và kiểm tra lại
+                    // P2P Internet mode: không quét LAN, chờ và kiểm tra lại
                     Thread.sleep(SCAN_INTERVAL);
                     continue;
                 }
@@ -302,9 +305,9 @@ public class PeerDiscovery {
     private void tryConnectToPeer(String targetIP) {
         SSLSocket socket = null;
         try {
-            // Tạo SSLSocket và kết nối với timeout
-            socket = securityManager.createSSLSocket(targetIP, DISCOVERY_PORT);
-            socket.connect(new InetSocketAddress(targetIP, DISCOVERY_PORT), CONNECTION_TIMEOUT);
+            // Kết nối đến discovery port cố định
+            socket = securityManager.createSSLSocket(targetIP, discoveryPort);
+            socket.connect(new InetSocketAddress(targetIP, discoveryPort), CONNECTION_TIMEOUT);
             socket.setSoTimeout(5000);
             
             // Start SSL handshake
@@ -332,7 +335,11 @@ public class PeerDiscovery {
                     return;
                 }
 
-                handleDiscoveredPeer(remotePeer);
+                // Chỉ loại khi trùng cả IP và port
+                if (!(remotePeer.getIpAddress().equals(localPeer.getIpAddress()) &&
+                      remotePeer.getPort() == localPeer.getPort())) {
+                    handleDiscoveredPeer(remotePeer);
+                }
             }
 
         } catch (IOException | ClassNotFoundException e) {
@@ -362,22 +369,26 @@ public class PeerDiscovery {
                 long currentTime = System.currentTimeMillis();
 
                 // Gửi heartbeat đến các peer đã biết
-                for (PeerInfo peer : new ArrayList<>(discoveredPeers.values())) {
-                    // KHÔNG gửi heartbeat cho peers từ relay (vì không thể P2P trực tiếp)
-                    // Relay peers được maintain bởi relay server heartbeat
-                    boolean isRelayPeer = isPublicIP(peer.getIpAddress());
+                List<Map.Entry<String, PeerInfo>> peerEntries = new ArrayList<>(discoveredPeers.entrySet());
+                for (Map.Entry<String, PeerInfo> entry : peerEntries) {
+                    String compositeKey = entry.getKey();
+                    PeerInfo peer = entry.getValue();
                     
-                    if (!isRelayPeer) {
+                    // KHÔNG gửi heartbeat cho peers từ Internet (vì được quản lý bởi Signaling Server)
+                    // Internet peers được maintain bởi Signaling Server heartbeat
+                    boolean isInternetPeer = isPublicIP(peer.getIpAddress());
+                    
+                    if (!isInternetPeer) {
                         // Chỉ heartbeat cho LAN peers
                         executorService.submit(() -> sendHeartbeat(peer));
                     } else {
-                        // Relay peers: auto-refresh lastSeen để không timeout
+                        // Internet peers: auto-refresh lastSeen để không timeout
                         peer.updateLastSeen();
                     }
 
                     // Kiểm tra timeout
                     if (currentTime - peer.getLastSeen() > PEER_TIMEOUT) {
-                        discoveredPeers.remove(peer.getPeerId());
+                        discoveredPeers.remove(compositeKey);
                         notifyPeerLost(peer);
                     }
                 }
@@ -405,8 +416,8 @@ public class PeerDiscovery {
     private void sendHeartbeat(PeerInfo peer) {
         SSLSocket socket = null;
         try {
-            socket = securityManager.createSSLSocket(peer.getIpAddress(), DISCOVERY_PORT);
-            socket.connect(new InetSocketAddress(peer.getIpAddress(), DISCOVERY_PORT), CONNECTION_TIMEOUT);
+            socket = securityManager.createSSLSocket(peer.getIpAddress(), discoveryPort);
+            socket.connect(new InetSocketAddress(peer.getIpAddress(), discoveryPort), CONNECTION_TIMEOUT);
             socket.setSoTimeout(3000);
             socket.startHandshake();
 
@@ -444,12 +455,15 @@ public class PeerDiscovery {
 
     /**
      * Xử lý peer mới phát hiện
+     * Sử dụng composite key (IP:Port) để phân biệt nhiều peer trên cùng máy
      */
     private void handleDiscoveredPeer(PeerInfo peer) {
-        boolean isNewPeer = !discoveredPeers.containsKey(peer.getPeerId());
+        // Tạo composite key từ IP và Port để phân biệt peer trên cùng máy
+        String compositeKey = peer.getIpAddress() + "_" + peer.getPort();
+        boolean isNewPeer = !discoveredPeers.containsKey(compositeKey);
 
         peer.updateLastSeen();
-        discoveredPeers.put(peer.getPeerId(), peer);
+        discoveredPeers.put(compositeKey, peer);
 
         if (isNewPeer) {
             System.out.println("\n✅ ========== PEER MỚI ==========");
@@ -578,16 +592,19 @@ public class PeerDiscovery {
     }
     
     /**
-     * Thêm peer được phát hiện từ relay server
+     * Thêm peer được phát hiện từ Signaling Server (Internet mode)
      */
     public void addDiscoveredPeer(PeerInfo peer) {
-        if (peer.getPeerId().equals(localPeer.getPeerId())) {
+        // Kiểm tra không phải chính mình (so sánh IP và Port)
+        if (peer.getIpAddress().equals(localPeer.getIpAddress()) && 
+            peer.getPort() == localPeer.getPort()) {
             return; // Không thêm chính mình
         }
         
-        if (!discoveredPeers.containsKey(peer.getPeerId())) {
+        String compositeKey = peer.getIpAddress() + "_" + peer.getPort();
+        if (!discoveredPeers.containsKey(compositeKey)) {
             peer.updateLastSeen();
-            discoveredPeers.put(peer.getPeerId(), peer);
+            discoveredPeers.put(compositeKey, peer);
             System.out.println("🌐 Phát hiện peer qua Internet: " + peer.getDisplayName() + 
                              " (" + peer.getIpAddress() + ":" + peer.getPort() + ")");
             notifyPeerDiscovered(peer);
@@ -619,13 +636,13 @@ public class PeerDiscovery {
     
     /**
      * Set connection mode
-     * @param p2pOnly true = P2P only (LAN scan), false = Relay only (no LAN scan)
+     * @param p2pOnly true = P2P LAN (quét mạng cục bộ), false = P2P Internet (dùng Signaling Server)
      */
     public void setP2POnlyMode(boolean p2pOnly) {
         boolean previousMode = this.p2pOnlyMode;
         this.p2pOnlyMode = p2pOnly;
         
-        System.out.println("🔧 PeerDiscovery mode: " + (p2pOnly ? "P2P (LAN)" : "Relay (Internet)"));
+        System.out.println("🔧 Chế độ PeerDiscovery: " + (p2pOnly ? "P2P (LAN)" : "P2P (Internet)"));
         
         if (previousMode != p2pOnly) {
             // Clear discovered peers when switching modes
@@ -648,12 +665,12 @@ public class PeerDiscovery {
     
     /**
      * Lấy peers theo mode hiện tại
-     * P2P Mode: Chỉ lấy LAN peers (private IPs)
-     * Relay Mode: Lấy tất cả peers (bao gồm relay peers)
+     * P2P LAN Mode: Chỉ lấy LAN peers (private IPs)
+     * P2P Internet Mode: Lấy tất cả peers (bao gồm Internet peers)
      */
     public List<PeerInfo> getFilteredPeers() {
         if (p2pOnlyMode) {
-            // P2P Mode: Chỉ lấy LAN peers
+            // P2P LAN Mode: Chỉ lấy LAN peers
             List<PeerInfo> lanPeers = new ArrayList<>();
             for (PeerInfo peer : discoveredPeers.values()) {
                 if (isPrivateIP(peer.getIpAddress())) {
@@ -662,7 +679,7 @@ public class PeerDiscovery {
             }
             return lanPeers;
         } else {
-            // Relay Mode: Lấy tất cả
+            // P2P Internet Mode: Lấy tất cả
             return new ArrayList<>(discoveredPeers.values());
         }
     }
@@ -672,7 +689,6 @@ public class PeerDiscovery {
      */
     private boolean isPrivateIP(String ip) {
         if (ip == null) return false;
-        if ("relay".equals(ip)) return false;
         
         String[] parts = ip.split("\\.");
         if (parts.length != 4) return false;
@@ -692,6 +708,66 @@ public class PeerDiscovery {
             return false;
         }
     }
+    
+    /**
+     * Thêm peer từ Internet (từ Signaling Server)
+     * Peer này không cần verify signature vì đã được Signaling Server xác thực
+     * 
+     * @param peer PeerInfo từ Signaling Server
+     */
+    public void addInternetPeer(PeerInfo peer) {
+        if (peer == null) {
+            return;
+        }
+        
+        // Kiểm tra không phải chính mình (so sánh IP và Port)
+        if (peer.getIpAddress().equals(localPeer.getIpAddress()) && 
+            peer.getPort() == localPeer.getPort()) {
+            return;
+        }
+        
+        String compositeKey = peer.getIpAddress() + "_" + peer.getPort();
+        boolean isNewPeer = !discoveredPeers.containsKey(compositeKey);
+        
+        peer.updateLastSeen();
+        discoveredPeers.put(compositeKey, peer);
+        
+        if (isNewPeer) {
+            System.out.println("\n🌐 ========== PEER INTERNET MỚI ==========");
+            System.out.println("   Tên: " + peer.getDisplayName());
+            System.out.println("   IP: " + peer.getIpAddress());
+            System.out.println("   Port: " + peer.getPort());
+            System.out.println("   ID: " + peer.getPeerId().substring(0, 8) + "...");
+            System.out.println("   Nguồn: Signaling Server");
+            System.out.println("   Tổng peers: " + discoveredPeers.size());
+            System.out.println("==========================================\n");
+            
+            notifyPeerDiscovered(peer);
+        }
+    }
+    
+    /**
+     * Xóa peer khỏi danh sách
+     */
+    public void removePeer(String peerId) {
+        // Tìm peer theo composite key hoặc peer ID
+        PeerInfo peerToRemove = null;
+        String keyToRemove = null;
+        
+        for (Map.Entry<String, PeerInfo> entry : discoveredPeers.entrySet()) {
+            if (entry.getValue().getPeerId().equals(peerId)) {
+                peerToRemove = entry.getValue();
+                keyToRemove = entry.getKey();
+                break;
+            }
+        }
+        
+        if (peerToRemove != null && keyToRemove != null) {
+            discoveredPeers.remove(keyToRemove);
+            notifyPeerLost(peerToRemove);
+            System.out.println("👋 Đã xóa peer: " + peerToRemove.getDisplayName());
+        }
+    }
 
     // Getter methods
     public List<PeerInfo> getDiscoveredPeers() {
@@ -702,7 +778,15 @@ public class PeerDiscovery {
         return discoveredPeers.size();
     }
 
+    /**
+     * Lấy peer theo ID (tìm trong tất cả composite keys)
+     */
     public PeerInfo getPeerById(String peerId) {
-        return discoveredPeers.get(peerId);
+        for (PeerInfo peer : discoveredPeers.values()) {
+            if (peer.getPeerId().equals(peerId)) {
+                return peer;
+            }
+        }
+        return null;
     }
 }
