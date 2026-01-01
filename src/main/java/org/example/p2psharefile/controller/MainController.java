@@ -1418,10 +1418,21 @@ public class MainController implements P2PService.P2PServiceListener {
             downloadDirectory = saveDir.getAbsolutePath();
             
             try {
-                p2pService.receiveByPIN(pin, downloadDirectory);
-                log("� Đang tải file bằng mã PIN: " + pin);
+                // Sử dụng chunked transfer với progress listener
+                TransferState state = p2pService.receiveByPINWithProgress(
+                    pin, 
+                    downloadDirectory, 
+                    createChunkedTransferListener()
+                );
+                
+                if (state != null) {
+                    // Hiển thị global progress UI
+                    showGlobalTransferProgress(state);
+                    showDownloadProgress(state.getFileName());
+                }
+                
+                log("📥 Đang tải file bằng mã PIN: " + pin + " (chunked transfer)");
                 pinInputField.clear();
-                showInfo("Đã bắt đầu tải file từ mã PIN: " + pin);
             } catch (IllegalArgumentException e) {
                 // PIN không tìm thấy hoặc hết hạn
                 showError(e.getMessage());

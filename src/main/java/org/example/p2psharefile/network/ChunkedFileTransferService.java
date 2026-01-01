@@ -9,9 +9,12 @@ import org.example.p2psharefile.security.AESEncryption;
 import org.example.p2psharefile.security.SecurityManager;
 
 import javax.crypto.SecretKey;
+import javax.net.ssl.SSLServerSocket;
 import javax.net.ssl.SSLSocket;
 import java.io.*;
 import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.net.SocketException;
 import java.util.Map;
 import java.util.concurrent.*;
 import java.util.logging.Logger;
@@ -33,14 +36,14 @@ import java.util.logging.Logger;
  * - RESPONSE_CHUNK: Trả về dữ liệu chunk
  * 
  * @author P2PShareFile Team
- * @version 1.0 - Chunked Transfer with Resume
+ * @version 2.0 - Chunked Transfer with Server Socket
  */
 public class ChunkedFileTransferService {
     
     private static final Logger LOGGER = Logger.getLogger(ChunkedFileTransferService.class.getName());
     private static final String DEFAULT_KEY = "P2PShareFileSecretKey123456789";
-    private static final int CONNECTION_TIMEOUT = 5000;  // 5s
-    private static final int READ_TIMEOUT = 60000;       // 60s
+    private static final int CONNECTION_TIMEOUT = 10000;  // 10s (tăng từ 5s)
+    private static final int READ_TIMEOUT = 120000;       // 120s (tăng từ 60s)
     private static final int CHUNKED_TRANSFER_PORT = 10005; // Port cố định cho chunked transfer
     
     // Protocol commands
@@ -54,6 +57,8 @@ public class ChunkedFileTransferService {
     private final SecurityManager securityManager;
     private final SecretKey encryptionKey;
     
+    // Server socket để nhận requests từ peers khác
+    private SSLServerSocket serverSocket;
     private ExecutorService executorService;
     private volatile boolean running = false;
     
@@ -86,7 +91,7 @@ public class ChunkedFileTransferService {
     }
     
     /**
-     * Bắt đầu service (không cần server socket - chỉ là client-side)
+     * Bắt đầu service với server socket để nhận requests
      */
     public void start() throws IOException {
         if (running) return;
@@ -94,7 +99,42 @@ public class ChunkedFileTransferService {
         running = true;
         executorService = Executors.newCachedThreadPool();
         
-        System.out.println("✓ Chunked File Transfer Service đã khởi động (client-mode)");
+        // Tạo SSLServerSocket để lắng nghe chunk requests
+        serverSocket = securityManager.createSSLServerSocket(CHUNKED_TRANSFER_PORT);
+        
+        // Thread lắng nghe requests
+        executorService.submit(this::listenForRequests);
+        
+        System.out.println("✓ Chunked File Transfer Service đã khởi động trên port " + CHUNKED_TRANSFER_PORT);
+    }
+    
+    /**
+     * Thread lắng nghe requests từ peers
+     */
+    private void listenForRequests() {
+        while (running) {
+            try {
+                Socket clientSocket = serverSocket.accept();
+                executorService.submit(() -> handleClientRequest((SSLSocket) clientSocket));
+            } catch (SocketException e) {
+                // Server socket đã đóng
+                if (running) {
+                    LOGGER.warning("Server socket error: " + e.getMessage());
+                }
+                break;
+            } catch (IOException e) {
+                if (running) {
+                    LOGGER.warning("Error accepting connection: " + e.getMessage());
+                }
+            }
+        }
+    }
+    
+    /**
+     * Lấy port đang dùng
+     */
+    public int getPort() {
+        return CHUNKED_TRANSFER_PORT;
     }
     
     /**
@@ -109,6 +149,15 @@ public class ChunkedFileTransferService {
         }
         transferTasks.clear();
         activeTransfers.clear();
+        
+        // Đóng server socket
+        try {
+            if (serverSocket != null && !serverSocket.isClosed()) {
+                serverSocket.close();
+            }
+        } catch (IOException e) {
+            LOGGER.warning("Error closing server socket: " + e.getMessage());
+        }
         
         if (executorService != null) {
             executorService.shutdownNow();

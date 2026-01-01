@@ -16,24 +16,17 @@ import java.util.concurrent.*;
 import java.util.logging.Logger;
 
 /**
- * FileTransferService - Truyền file qua TLS/SSL với mã hóa AES
+ * FileTransferService - Service hỗ trợ upload file (legacy)
  * 
- * Hỗ trợ 2 chế độ:
- * - LAN Mode: P2P thuần túy qua mạng LAN
- * - Internet Mode: P2P Hybrid với signaling server 
+ * LƯU Ý: Download file nên sử dụng ChunkedFileTransferService thay vì class này
+ * để có progress tracking tốt hơn và hỗ trợ pause/resume.
  * 
- * Quy trình truyền file (với TLS + AES):
- * 1. Peer A yêu cầu download file từ Peer B
- * 2. TLS channel được thiết lập (confidentiality + integrity)
- * 3. Peer B đọc file → nén (GZIP) → mã hóa (AES) → gửi qua TLS
- * 4. Peer A nhận → giải mã → giải nén → lưu file
- * 
- * Security layers:
- * - TLS: Bảo vệ transport channel
- * - AES: Mã hóa file content (defense in depth)
+ * Class này vẫn được giữ để:
+ * - Xử lý các yêu cầu upload từ peers cũ (tương thích ngược)
+ * - Cung cấp server socket trên port 10004
  * 
  * @author P2PShareFile Team
- * @version 2.0 - P2P Hybrid (dùng Signaling Server cho Internet, không dùng relay)
+ * @version 2.1 - Legacy support (sử dụng ChunkedFileTransferService cho download)
  */
 public class FileTransferService {
     
@@ -41,7 +34,7 @@ public class FileTransferService {
     private static final int BUFFER_SIZE = 8192;         // 8KB buffer
     private static final String DEFAULT_KEY = "P2PShareFileSecretKey123456789"; // Default AES key
     private static final int P2P_TIMEOUT_MS = 5000;      // 5s timeout cho P2P
-    private static final int TRANSFER_PORT = 10004;      // Port cố định cho truyền file
+    private static final int TRANSFER_PORT = 10004;      // Port cố định cho truyền file (legacy)
     
     private final PeerInfo localPeer;
     private final SecurityManager securityManager;

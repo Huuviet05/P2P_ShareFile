@@ -218,7 +218,7 @@ public class PeerDiscovery {
                 return;
             }
             
-            System.out.println("✅ [Bảo mật] Đã xác minh chữ ký cho peer: " + remotePeer.getDisplayName());
+            // System.out.println("✅ [Bảo mật] Đã xác minh chữ ký cho peer: " + remotePeer.getDisplayName());
 
             if ("JOIN".equals(messageType) || "HEARTBEAT".equals(messageType)) {
                 // Tạo signed response
@@ -228,8 +228,8 @@ public class PeerDiscovery {
                 oos.writeObject(response);
                 oos.flush();
 
-                System.out.println("📩 Nhận " + messageType + " từ: " + remotePeer.getDisplayName() +
-                        " (" + realIP + ":" + remotePeer.getPort() + ")");
+                // System.out.println("📩 Nhận " + messageType + " từ: " + remotePeer.getDisplayName() +
+                //         " (" + realIP + ":" + remotePeer.getPort() + ")");
 
                 handleDiscoveredPeer(remotePeer);
             }
