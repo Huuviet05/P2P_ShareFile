@@ -34,6 +34,9 @@ import java.util.concurrent.TimeUnit;
  */
 public class P2PService {
 
+    // Transfer mode: true = chunked (mặc định), false = stream
+    private boolean useChunkedTransfer = true;
+
     private final PeerInfo localPeer;
     private final SecurityManager securityManager;
     private final PeerDiscovery peerDiscovery;
@@ -51,9 +54,6 @@ public class P2PService {
     private ScheduledExecutorService signalingRefreshExecutor;
 
     private final List<P2PServiceListener> listeners;
-    
-    // Transfer mode: true = chunked (mặc định), false = stream
-    private boolean useChunkedTransfer = true;
 
     /**
      * Interface để UI nhận thông báo từ P2P Service
@@ -266,7 +266,7 @@ public class P2PService {
         System.out.println("   Port TCP yêu cầu: " + localPeer.getPort() + " (tự động gán)");
         System.out.println("   Khóa công khai: " + localPeer.getPublicKey().substring(0, 40) + "...");
         System.out.println("   Bảo mật: TLS + ECDSA Signatures");
-        System.out.println("   Transfer Mode: " + (useChunkedTransfer ? "Chunked (Resume supported)" : "Stream"));
+        System.out.println("   Transfer Mode: Chunked (Resume supported)");
 
         try {
             // ⭐ BƯỚC 1: Start FileTransferService TRƯỚC để lấy port thực
@@ -498,13 +498,8 @@ public class P2PService {
             return;
         }
 
-        if (useChunkedTransfer) {
-            // Sử dụng chunked transfer (hỗ trợ resume)
-            downloadFileChunked(peer, fileInfo, saveDirectory, null);
-        } else {
-            // Sử dụng stream transfer (legacy)
-            downloadFileStream(peer, fileInfo, saveDirectory);
-        }
+        // Luôn sử dụng chunked transfer để đồng bộ progress
+        downloadFileChunked(peer, fileInfo, saveDirectory, null);
     }
     
     /**
@@ -561,38 +556,6 @@ public class P2PService {
     }
     
     /**
-     * Download file sử dụng stream transfer (legacy - không hỗ trợ resume)
-     */
-    public void downloadFileStream(PeerInfo peer, FileInfo fileInfo, String saveDirectory) {
-        if (!running) {
-            System.err.println("❌ P2P Service chưa khởi động");
-            return;
-        }
-
-        fileTransferService.downloadFile(
-                peer,
-                fileInfo,
-                saveDirectory,
-                new FileTransferService.TransferProgressListener() {
-                    @Override
-                    public void onProgress(long bytesTransferred, long totalBytes) {
-                        notifyTransferProgress(fileInfo.getFileName(), bytesTransferred, totalBytes);
-                    }
-
-                    @Override
-                    public void onComplete(File file) {
-                        notifyTransferComplete(fileInfo.getFileName(), file);
-                    }
-
-                    @Override
-                    public void onError(Exception e) {
-                        notifyTransferError(fileInfo.getFileName(), e);
-                    }
-                }
-        );
-    }
-    
-    /**
      * Tạm dừng download chunked
      */
     public void pauseChunkedTransfer(String transferId) {
@@ -618,21 +581,6 @@ public class P2PService {
      */
     public TransferState getTransferState(String transferId) {
         return chunkedTransferService.getTransferState(transferId);
-    }
-    
-    /**
-     * Bật/tắt chế độ chunked transfer
-     */
-    public void setUseChunkedTransfer(boolean useChunked) {
-        this.useChunkedTransfer = useChunked;
-        System.out.println("📦 Chế độ transfer: " + (useChunked ? "Chunked (có resume)" : "Stream (không resume)"));
-    }
-    
-    /**
-     * Kiểm tra đang dùng chunked transfer hay không
-     */
-    public boolean isUseChunkedTransfer() {
-        return useChunkedTransfer;
     }
 
     /**
@@ -678,7 +626,7 @@ public class P2PService {
     }
 
     /**
-     * Nhận file bằng mã PIN
+     * Nhận file bằng mã PIN (sử dụng chunked transfer)
      *
      * @param pin Mã PIN 6 số
      * @param saveDirectory Thư mục lưu file
@@ -706,8 +654,44 @@ public class P2PService {
         System.out.println("  📁 File: " + session.getFileInfo().getFileName());
         System.out.println("  📏 Size: " + session.getFileInfo().getFileSize() + " bytes");
         
-        // Download file từ owner peer
-        downloadFile(session.getOwnerPeer(), session.getFileInfo(), saveDirectory);
+        // Download file từ owner peer (luôn dùng chunked transfer)
+        downloadFileChunked(session.getOwnerPeer(), session.getFileInfo(), saveDirectory, null);
+    }
+    
+    /**
+     * Nhận file bằng mã PIN với listener để theo dõi progress
+     *
+     * @param pin Mã PIN 6 số
+     * @param saveDirectory Thư mục lưu file
+     * @param listener Listener để theo dõi progress
+     * @return TransferState hoặc null
+     * @throws IllegalStateException Nếu service chưa chạy
+     * @throws IllegalArgumentException Nếu PIN không hợp lệ hoặc đã hết hạn
+     */
+    public TransferState receiveByPINWithProgress(String pin, String saveDirectory,
+                                                   ChunkedFileTransferService.ChunkedTransferListener listener) {
+        if (!running) {
+            throw new IllegalStateException("P2P Service chưa khởi động");
+        }
+
+        // Tìm session bằng PIN
+        System.out.println("🔍 Đang tìm PIN: " + pin);
+        ShareSession session = pinCodeService.findByPIN(pin);
+
+        if (session == null) {
+            throw new IllegalArgumentException("Không tìm thấy PIN: " + pin);
+        }
+
+        if (session.isExpired()) {
+            throw new IllegalArgumentException("PIN đã hết hạn: " + pin);
+        }
+
+        System.out.println("✓ Tìm thấy PIN: " + pin + " -> " + session.getFileInfo().getFileName());
+        System.out.println("  📁 File: " + session.getFileInfo().getFileName());
+        System.out.println("  📏 Size: " + session.getFileInfo().getFileSize() + " bytes");
+        
+        // Download file từ owner peer với listener
+        return downloadFileChunked(session.getOwnerPeer(), session.getFileInfo(), saveDirectory, listener);
     }
 
     /**
