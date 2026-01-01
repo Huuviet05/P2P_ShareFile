@@ -372,19 +372,104 @@ public class MainController implements P2PService.P2PServiceListener {
      * Chuyển sang chế độ P2P Hybrid (Internet với signaling server)
      */
     private void switchToRelayMode() {
-        isP2PMode = false;
+        // Hiển thị dialog nhập địa chỉ Signaling Server
+        showSignalingServerDialog();
+    }
+    
+    /**
+     * Hiển thị dialog nhập địa chỉ Signaling Server
+     */
+    private void showSignalingServerDialog() {
+        // Tạo dialog
+        Dialog<String[]> dialog = new Dialog<>();
+        dialog.setTitle("Cấu hình Signaling Server");
+        dialog.setHeaderText("Nhập địa chỉ Signaling Server để kết nối P2P qua Internet");
         
-        // Cập nhật logic trong các services
-        if (p2pService != null) {
-            p2pService.setP2POnlyMode(false);
+        // Tạo các nút
+        ButtonType connectButtonType = new ButtonType("Kết nối", ButtonBar.ButtonData.OK_DONE);
+        ButtonType cancelButtonType = new ButtonType("Hủy", ButtonBar.ButtonData.CANCEL_CLOSE);
+        dialog.getDialogPane().getButtonTypes().addAll(connectButtonType, cancelButtonType);
+        
+        // Tạo form nhập liệu
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(10);
+        grid.setPadding(new javafx.geometry.Insets(20, 150, 10, 10));
+        
+        TextField hostField = new TextField();
+        hostField.setPromptText("Ví dụ: 192.168.1.100 hoặc my-server.com");
+        hostField.setText("localhost"); // Giá trị mặc định
+        
+        TextField portField = new TextField();
+        portField.setPromptText("Mặc định: 9000");
+        portField.setText("9000");
+        
+        grid.add(new Label("Host/IP:"), 0, 0);
+        grid.add(hostField, 1, 0);
+        grid.add(new Label("Port:"), 0, 1);
+        grid.add(portField, 1, 1);
+        
+        // Thêm hướng dẫn
+        Label instructionLabel = new Label(
+            "💡 Hướng dẫn:\n" +
+            "1. Chạy StandaloneSignalingServer trên 1 máy (server trung tâm)\n" +
+            "2. Nhập IP của máy đó vào ô Host/IP\n" +
+            "3. Tất cả peers kết nối đến cùng 1 server này"
+        );
+        instructionLabel.setWrapText(true);
+        instructionLabel.setStyle("-fx-font-size: 11; -fx-text-fill: #666;");
+        grid.add(instructionLabel, 0, 2, 2, 1);
+        
+        dialog.getDialogPane().setContent(grid);
+        
+        // Request focus vào hostField
+        Platform.runLater(hostField::requestFocus);
+        
+        // Xử lý kết quả
+        dialog.setResultConverter(dialogButton -> {
+            if (dialogButton == connectButtonType) {
+                return new String[]{hostField.getText().trim(), portField.getText().trim()};
+            }
+            return null;
+        });
+        
+        dialog.showAndWait().ifPresent(result -> {
+            String host = result[0];
+            int port = 9000;
+            try {
+                port = Integer.parseInt(result[1]);
+            } catch (NumberFormatException e) {
+                log("⚠ Port không hợp lệ, sử dụng port mặc định 9000");
+            }
+            
+            if (host.isEmpty()) {
+                showError("Vui lòng nhập địa chỉ host");
+                // Quay lại P2P mode
+                p2pModeToggle.setSelected(true);
+                return;
+            }
+            
+            // Cấu hình địa chỉ Signaling Server
+            if (p2pService != null) {
+                p2pService.setSignalingServerAddress(host, port);
+                p2pService.setP2POnlyMode(false);
+            }
+            
+            isP2PMode = false;
+            
+            // Cập nhật UI
+            updateModeUI();
+            log("🌐 Đã chuyển sang chế độ P2P Hybrid (Internet)");
+            log("   • Signaling Server: " + host + ":" + port);
+            log("   • Kết nối: Qua signaling server");
+            log("   • Truyền file: P2P trực tiếp");
+            log("   • Preview: Hỗ trợ đầy đủ");
+        });
+        
+        // Nếu user hủy dialog, quay lại P2P mode
+        if (isP2PMode) {
+            p2pModeToggle.setSelected(true);
         }
-        
-        // Cập nhật UI
-        updateModeUI();
-        log("🌐 Đã chuyển sang chế độ P2P Hybrid (Internet)");
-        log("   • Kết nối: Qua signaling server");
-        log("   • Truyền file: P2P trực tiếp");
-        log("   • Preview: Hỗ trợ đầy đủ");
     }
     
     /**

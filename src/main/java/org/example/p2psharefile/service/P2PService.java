@@ -7,6 +7,7 @@ import org.example.p2psharefile.security.FileHashUtil;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.ServerSocket;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
@@ -32,6 +33,20 @@ import java.util.concurrent.TimeUnit;
  * - Public key distribution qua PeerInfo
  */
 public class P2PService {
+
+    // Danh sách các port cố định của các service (cần tránh khi sinh port ngẫu nhiên)
+    private static final Set<Integer> RESERVED_PORTS = Set.of(
+        1000,  // CHUNKED_TRANSFER_PORT
+        1111,  // DISCOVERY_PORT
+        2222,  // PIN_SERVER_PORT
+        5555,  // PREVIEW_PORT
+        9000,  // SIGNALING_SERVER_PORT
+        9001   // SEARCH_PORT
+    );
+    
+    // Phạm vi port hợp lệ cho peer
+    private static final int MIN_PEER_PORT = 10000;
+    private static final int MAX_PEER_PORT = 60000;
 
     private final PeerInfo localPeer;
     private final SecurityManager securityManager;
@@ -84,9 +99,16 @@ public class P2PService {
             System.out.println("🔐 Đang khởi tạo SecurityManager...");
             this.securityManager = new SecurityManager(peerId, displayName);
             
-            // ⭐ BƯỚC 2: Tạo PeerInfo với public key
+            // ⭐ BƯỚC 1.5: Nếu tcpPort = 0, sinh port ngẫu nhiên hợp lệ
+            int actualPort = tcpPort;
+            if (tcpPort == 0) {
+                actualPort = generateRandomAvailablePort();
+                System.out.println("🎲 Port ngẫu nhiên được sinh: " + actualPort);
+            }
+            
+            // ⭐ BƯỚC 2: Tạo PeerInfo với public key VÀ port thực tế
             String publicKeyEncoded = securityManager.getPublicKeyEncoded();
-            this.localPeer = new PeerInfo(peerId, getLocalIPAddress(), tcpPort, displayName, publicKeyEncoded);
+            this.localPeer = new PeerInfo(peerId, getLocalIPAddress(), actualPort, displayName, publicKeyEncoded);
             
             System.out.println("✓ Đã tạo Peer cục bộ với khóa công khai");
             System.out.println("  → Peer ID: " + peerId);
@@ -198,6 +220,53 @@ public class P2PService {
         } catch (Exception e) {
             System.err.println("❌ Lỗi lấy IP: " + e.getMessage());
             return "127.0.0.1";
+        }
+    }
+
+    /**
+     * Sinh port ngẫu nhiên hợp lệ cho peer
+     * - Nằm trong phạm vi MIN_PEER_PORT đến MAX_PEER_PORT
+     * - Không trùng với các port service cố định
+     * - Kiểm tra port có sẵn (không bị chiếm)
+     */
+    private int generateRandomAvailablePort() {
+        Random random = new Random();
+        int maxAttempts = 100;
+        
+        for (int attempt = 0; attempt < maxAttempts; attempt++) {
+            // Sinh port trong phạm vi hợp lệ
+            int port = MIN_PEER_PORT + random.nextInt(MAX_PEER_PORT - MIN_PEER_PORT);
+            
+            // Kiểm tra không trùng với port service cố định
+            if (RESERVED_PORTS.contains(port)) {
+                continue;
+            }
+            
+            // Kiểm tra port có sẵn không
+            if (isPortAvailable(port)) {
+                return port;
+            }
+        }
+        
+        // Fallback: để hệ thống tự chọn port (bind port 0)
+        System.err.println("⚠ Không tìm được port trong phạm vi, dùng auto-assign từ hệ thống");
+        try (ServerSocket socket = new ServerSocket(0)) {
+            return socket.getLocalPort();
+        } catch (IOException e) {
+            // Trường hợp cực hiếm: trả về port mặc định trong phạm vi
+            return MIN_PEER_PORT + random.nextInt(1000);
+        }
+    }
+    
+    /**
+     * Kiểm tra port có sẵn không (không bị ứng dụng khác chiếm)
+     */
+    private boolean isPortAvailable(int port) {
+        try (ServerSocket socket = new ServerSocket(port)) {
+            socket.setReuseAddress(true);
+            return true;
+        } catch (IOException e) {
+            return false;
         }
     }
 
