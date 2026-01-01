@@ -41,6 +41,7 @@ public class ChunkedFileTransferService {
     private static final String DEFAULT_KEY = "P2PShareFileSecretKey123456789";
     private static final int CONNECTION_TIMEOUT = 5000;  // 5s
     private static final int READ_TIMEOUT = 60000;       // 60s
+    private static final int CHUNKED_TRANSFER_PORT = 10005; // Port cố định cho chunked transfer
     
     // Protocol commands
     private static final byte CMD_REQUEST_METADATA = 0x01;
@@ -249,7 +250,7 @@ public class ChunkedFileTransferService {
             state = new TransferState(fileInfo.getFileName(), fileInfo.getFilePath(), fileInfo.getFileSize());
             state.setSaveDirectory(saveDirectory);
             state.setPeerIp(peer.getIpAddress());
-            state.setPeerPort(peer.getPort());
+            state.setPeerPort(CHUNKED_TRANSFER_PORT);
             activeTransfers.put(transferKey, state);
         }
         
@@ -382,8 +383,8 @@ public class ChunkedFileTransferService {
      * Yêu cầu metadata từ peer
      */
     private void requestMetadata(PeerInfo peer, FileInfo fileInfo, TransferState state) throws Exception {
-        SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), peer.getPort());
-        socket.connect(new InetSocketAddress(peer.getIpAddress(), peer.getPort()), CONNECTION_TIMEOUT);
+        SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), CHUNKED_TRANSFER_PORT);
+        socket.connect(new InetSocketAddress(peer.getIpAddress(), CHUNKED_TRANSFER_PORT), CONNECTION_TIMEOUT);
         socket.setSoTimeout(READ_TIMEOUT);
         socket.startHandshake();
         
@@ -421,8 +422,8 @@ public class ChunkedFileTransferService {
      * Download một chunk từ peer
      */
     private byte[] downloadChunk(PeerInfo peer, String filePath, int chunkIndex, int chunkSize) throws Exception {
-        SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), peer.getPort());
-        socket.connect(new InetSocketAddress(peer.getIpAddress(), peer.getPort()), CONNECTION_TIMEOUT);
+        SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), CHUNKED_TRANSFER_PORT);
+        socket.connect(new InetSocketAddress(peer.getIpAddress(), CHUNKED_TRANSFER_PORT), CONNECTION_TIMEOUT);
         socket.setSoTimeout(READ_TIMEOUT);
         socket.startHandshake();
         

@@ -25,7 +25,7 @@ public class FileSearchService {
     private final PeerInfo localPeer;
     private final PeerDiscovery peerDiscovery;
     private final SecurityManager securityManager;
-    private final int searchPort; // Port động
+    private final int searchPort;
     private final Map<String, List<FileInfo>> sharedFiles;
     private final Set<String> processedRequests;
     
@@ -336,9 +336,8 @@ public class FileSearchService {
         SSLSocket socket = null;
         try {
             // Kết nối đến peer với TLS
-            int peerSearchPort = peer.getPort();
-            socket = securityManager.createSSLSocket(peer.getIpAddress(), peerSearchPort);
-            socket.connect(new InetSocketAddress(peer.getIpAddress(), peerSearchPort), CONNECTION_TIMEOUT);
+            socket = securityManager.createSSLSocket(peer.getIpAddress(), SEARCH_PORT);
+            socket.connect(new InetSocketAddress(peer.getIpAddress(), SEARCH_PORT), CONNECTION_TIMEOUT);
             socket.setSoTimeout(5000);
             socket.startHandshake();
 

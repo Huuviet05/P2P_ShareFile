@@ -112,11 +112,7 @@ public class PreviewService {
         running = true;
         
         // Preview port = transfer port + offset (nếu hợp lệ, nếu không thì auto-assign)
-        int previewPort = localPeer.getPort();
-        if (previewPort > 65535) {
-            previewPort = 0; // Auto-assign nếu vượt quá giới hạn
-            System.out.println("⚠ Port preview vượt quá 65535, sử dụng auto-assign");
-        }
+        // Port preview luôn cố định, không lấy từ localPeer
         
         try {
             previewServer = securityManager.createSSLServerSocket(PREVIEW_PORT);
@@ -310,10 +306,8 @@ public class PreviewService {
      */
     public PreviewManifest requestManifest(PeerInfo peer, String fileHash) {
         try {
-            int previewPort = peer.getPort();
-            
-            SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), previewPort);
-            socket.connect(new InetSocketAddress(peer.getIpAddress(), previewPort), 5000);
+            SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), PREVIEW_PORT);
+            socket.connect(new InetSocketAddress(peer.getIpAddress(), PREVIEW_PORT), 5000);
             socket.setSoTimeout(10000);
             socket.startHandshake();
             
@@ -390,10 +384,8 @@ public class PreviewService {
     public PreviewContent requestContent(PeerInfo peer, String fileHash, 
                                         PreviewManifest.PreviewType type) {
         try {
-            int previewPort = peer.getPort();
-            
-            SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), previewPort);
-            socket.connect(new InetSocketAddress(peer.getIpAddress(), previewPort), 5000);
+            SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), PREVIEW_PORT);
+            socket.connect(new InetSocketAddress(peer.getIpAddress(), PREVIEW_PORT), 5000);
             socket.setSoTimeout(10000);
             socket.startHandshake();
             

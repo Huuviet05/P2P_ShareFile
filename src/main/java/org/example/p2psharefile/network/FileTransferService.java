@@ -41,11 +41,11 @@ public class FileTransferService {
     private static final int BUFFER_SIZE = 8192;         // 8KB buffer
     private static final String DEFAULT_KEY = "P2PShareFileSecretKey123456789"; // Default AES key
     private static final int P2P_TIMEOUT_MS = 5000;      // 5s timeout cho P2P
+    private static final int TRANSFER_PORT = 10004;      // Port cố định cho truyền file
     
     private final PeerInfo localPeer;
     private final SecurityManager securityManager;
     private final SecretKey encryptionKey;
-    private final int transferPort;
     
     private SSLServerSocket transferServer;
     private ExecutorService executorService;
@@ -63,7 +63,6 @@ public class FileTransferService {
     public FileTransferService(PeerInfo localPeer, SecurityManager securityManager) {
         this.localPeer = localPeer;
         this.securityManager = securityManager;
-        this.transferPort = localPeer.getPort();
         // Tạo encryption key từ default key
         this.encryptionKey = AESEncryption.createKeyFromString(DEFAULT_KEY);
     }
@@ -71,7 +70,6 @@ public class FileTransferService {
     public FileTransferService(PeerInfo localPeer, SecurityManager securityManager, SecretKey customKey) {
         this.localPeer = localPeer;
         this.securityManager = securityManager;
-        this.transferPort = localPeer.getPort();
         this.encryptionKey = customKey;
     }
     
@@ -82,19 +80,15 @@ public class FileTransferService {
         if (running) return;
         
         running = true;
-        // SSLServerSocket với port = 0 (auto-assign)
-        transferServer = securityManager.createSSLServerSocket(transferPort);
-        
-        // Nếu port = 0, lấy port thực tế được assign
-        int actualPort = transferServer.getLocalPort();
-        localPeer.setPort(actualPort);
+        // SSLServerSocket với port cố định
+        transferServer = securityManager.createSSLServerSocket(TRANSFER_PORT);
         
         executorService = Executors.newCachedThreadPool();
         
         // Thread lắng nghe yêu cầu download
         executorService.submit(this::listenForTransferRequests);
         
-        System.out.println("✓ File Transfer Service (TLS) đã khởi động trên port " + actualPort);
+        System.out.println("✓ File Transfer Service (TLS) đã khởi động trên port " + TRANSFER_PORT);
     }
     
     /**
@@ -209,9 +203,9 @@ public class FileTransferService {
             try {
                 System.out.println("📥 Đang download file: " + fileInfo.getFileName() + " từ " + peer);
                 
-                // Download P2P qua TLS
-                SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), peer.getPort());
-                socket.connect(new InetSocketAddress(peer.getIpAddress(), peer.getPort()), 5000);
+                // Download P2P qua TLS - dùng port cố định
+                SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), TRANSFER_PORT);
+                socket.connect(new InetSocketAddress(peer.getIpAddress(), TRANSFER_PORT), 5000);
                 socket.setSoTimeout(60000); // Timeout 60 giây
                 socket.startHandshake();
                 
@@ -305,8 +299,8 @@ public class FileTransferService {
      */
     public void downloadFileSync(PeerInfo peer, FileInfo fileInfo,
                                  String saveDirectory, TransferProgressListener listener) throws Exception {
-        SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), peer.getPort());
-        socket.connect(new InetSocketAddress(peer.getIpAddress(), peer.getPort()), 3000);
+        SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), TRANSFER_PORT);
+        socket.connect(new InetSocketAddress(peer.getIpAddress(), TRANSFER_PORT), 3000);
         socket.setSoTimeout(30000);
         socket.startHandshake();
         
@@ -363,9 +357,9 @@ public class FileTransferService {
             try {
                 System.out.println("📤 Đang gửi file: " + file.getName() + " đến " + peer);
                 
-                // Kết nối đến peer qua TLS
-                SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), peer.getPort());
-                socket.connect(new InetSocketAddress(peer.getIpAddress(), peer.getPort()), 5000);
+                // Kết nối đến peer qua TLS - dùng port cố định
+                SSLSocket socket = securityManager.createSSLSocket(peer.getIpAddress(), TRANSFER_PORT);
+                socket.connect(new InetSocketAddress(peer.getIpAddress(), TRANSFER_PORT), 5000);
                 socket.setSoTimeout(60000);
                 socket.startHandshake();
                 

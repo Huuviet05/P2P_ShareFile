@@ -13,9 +13,7 @@ import java.io.IOException;
  * 
  * Đây là entry point của ứng dụng JavaFX
  * 
- * Program arguments: [port]
- * - port: Port TCP để nhận file (mặc định: 0 = auto)
- * Ví dụ: java -jar P2P_ShareFile.jar 8443
+ 
  */
 public class MainApplication extends Application {
     

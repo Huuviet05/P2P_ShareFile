@@ -263,14 +263,9 @@ public class PeerDiscovery {
 
                 List<Future<?>> scanTasks = new ArrayList<>();
 
-                // Quét dải IP từ 1-254
+                // Quét dải IP từ 1-254 (bao gồm cả IP cục bộ để tìm peer khác port trên cùng máy)
                 for (int i = 1; i <= 254; i++) {
                     final String targetIP = baseIP + "." + i;
-
-                    // Bỏ qua IP của chính mình
-                    if (targetIP.equals(localPeer.getIpAddress())) {
-                        continue;
-                    }
 
                     // Quét từng IP trong thread riêng
                     Future<?> task = executorService.submit(() -> tryConnectToPeer(targetIP));
