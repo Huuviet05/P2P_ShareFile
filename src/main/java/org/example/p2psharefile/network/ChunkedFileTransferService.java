@@ -44,7 +44,7 @@ public class ChunkedFileTransferService {
     private static final String DEFAULT_KEY = "P2PShareFileSecretKey123456789";
     private static final int CONNECTION_TIMEOUT = 10000;  // 10s (tăng từ 5s)
     private static final int READ_TIMEOUT = 120000;       // 120s (tăng từ 60s)
-    private static final int CHUNKED_TRANSFER_PORT = 10005; // Port cố định cho chunked transfer
+    private static final int CHUNKED_TRANSFER_PORT = 9999; // Port cố định cho chunked transfer
     
     // Protocol commands
     private static final byte CMD_REQUEST_METADATA = 0x01;
@@ -359,15 +359,56 @@ public class ChunkedFileTransferService {
         System.out.println("  📦 Tổng chunks: " + totalChunks + ", bắt đầu từ: " + startChunk);
         
         for (int i = startChunk; i < totalChunks; i++) {
-            // Kiểm tra trạng thái
-            if (state.getStatus() == TransferStatus.CANCELLED) {
-                System.out.println("  ❌ Download đã bị hủy");
+            // Kiểm tra thread interrupted
+            if (Thread.currentThread().isInterrupted()) {
+                System.out.println("  ❌ Thread bị interrupted - dừng download");
+                state.cancel();
+                if (tempFile.exists()) {
+                    tempFile.delete();
+                }
                 return;
             }
             
-            // Chờ nếu đang pause
+            // Kiểm tra trạng thái CANCELLED trước
+            if (state.getStatus() == TransferStatus.CANCELLED) {
+                System.out.println("  ❌ Download đã bị hủy (status: CANCELLED)");
+                // Xóa file tạm
+                if (tempFile.exists()) {
+                    tempFile.delete();
+                }
+                return;
+            }
+            
+            // Chờ nếu đang pause - với kiểm tra CANCELLED trong loop
             while (state.getStatus() == TransferStatus.PAUSED) {
-                Thread.sleep(100);
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    // Thread bị interrupt (cancel) trong khi đang pause - đây là bình thường
+                    System.out.println("  ⏹ Thread interrupted trong khi pause - dừng download");
+                    state.cancel();
+                    if (tempFile.exists()) {
+                        tempFile.delete();
+                    }
+                    return;
+                }
+                // Kiểm tra nếu bị cancel trong khi đang pause
+                if (state.getStatus() == TransferStatus.CANCELLED) {
+                    System.out.println("  ❌ Download đã bị hủy (từ trạng thái pause)");
+                    if (tempFile.exists()) {
+                        tempFile.delete();
+                    }
+                    return;
+                }
+            }
+            
+            // Kiểm tra lại CANCELLED sau khi resume
+            if (state.getStatus() == TransferStatus.CANCELLED) {
+                System.out.println("  ❌ Download đã bị hủy");
+                if (tempFile.exists()) {
+                    tempFile.delete();
+                }
+                return;
             }
             
             // Skip chunk đã nhận
@@ -379,6 +420,15 @@ public class ChunkedFileTransferService {
             byte[] chunkData = downloadChunk(peer, fileInfo.getFilePath(), i, state.getChunkSize());
             
             if (chunkData != null) {
+                // Kiểm tra trạng thái trước khi ghi
+                if (state.getStatus() == TransferStatus.CANCELLED) {
+                    System.out.println("  ❌ Download đã bị hủy (trước khi ghi chunk)");
+                    if (tempFile.exists()) {
+                        tempFile.delete();
+                    }
+                    return;
+                }
+                
                 // Ghi chunk vào file
                 long offset = state.getChunkOffset(i);
                 try (RandomAccessFile raf = new RandomAccessFile(tempFile, "rw")) {
@@ -522,55 +572,73 @@ public class ChunkedFileTransferService {
      * Tạm dừng download
      */
     public void pauseTransfer(String transferId) {
+        System.out.println("⏸ Yêu cầu pause transfer: " + transferId);
+        System.out.println("  📋 Active transfers: " + activeTransfers.size());
+        
         for (TransferState state : activeTransfers.values()) {
+            System.out.println("  → Checking: " + state.getTransferId());
             if (state.getTransferId().equals(transferId)) {
                 state.pause();
-                System.out.println("⏸ Đã tạm dừng: " + state.getFileName());
+                System.out.println("⏸ Đã tạm dừng: " + state.getFileName() + " (status: " + state.getStatus() + ")");
                 return;
             }
         }
+        System.out.println("⚠ Không tìm thấy transfer với ID: " + transferId);
     }
     
     /**
      * Tiếp tục download
      */
     public void resumeTransfer(String transferId) {
+        System.out.println("▶ Yêu cầu resume transfer: " + transferId);
+        
         for (TransferState state : activeTransfers.values()) {
             if (state.getTransferId().equals(transferId)) {
                 state.resume();
-                System.out.println("▶ Tiếp tục: " + state.getFileName());
+                System.out.println("▶ Tiếp tục: " + state.getFileName() + " (status: " + state.getStatus() + ")");
                 return;
             }
         }
+        System.out.println("⚠ Không tìm thấy transfer với ID: " + transferId);
     }
     
     /**
      * Hủy download
      */
     public void cancelTransfer(String transferId) {
+        System.out.println("❌ Yêu cầu cancel transfer: " + transferId);
+        System.out.println("  📋 Active transfers: " + activeTransfers.size());
+        
         for (Map.Entry<String, TransferState> entry : activeTransfers.entrySet()) {
+            System.out.println("  → Checking: " + entry.getValue().getTransferId());
             if (entry.getValue().getTransferId().equals(transferId)) {
+                // Đặt status CANCELLED TRƯỚC
                 entry.getValue().cancel();
+                System.out.println("  ✓ Status set to CANCELLED: " + entry.getValue().getStatus());
                 
+                // Cancel task với interrupt
                 Future<?> task = transferTasks.get(entry.getKey());
                 if (task != null) {
-                    task.cancel(true);
+                    boolean cancelled = task.cancel(true);
+                    System.out.println("  ✓ Task cancelled: " + cancelled);
                 }
                 
                 // Xóa file tạm
                 File tempFile = new File(entry.getValue().getSaveDirectory(), 
                     entry.getValue().getFileName() + ".part");
                 if (tempFile.exists()) {
-                    tempFile.delete();
+                    boolean deleted = tempFile.delete();
+                    System.out.println("  ✓ Temp file deleted: " + deleted);
                 }
                 
                 activeTransfers.remove(entry.getKey());
                 transferTasks.remove(entry.getKey());
                 
-                System.out.println("❌ Đã hủy: " + entry.getValue().getFileName());
+                System.out.println("❌ Đã hủy hoàn toàn: " + entry.getValue().getFileName());
                 return;
             }
         }
+        System.out.println("⚠ Không tìm thấy transfer với ID: " + transferId);
     }
     
     /**

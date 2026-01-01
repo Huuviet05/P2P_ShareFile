@@ -18,7 +18,7 @@ import java.util.concurrent.*;
  */
 public class PreviewService {
     
-    private static final int PREVIEW_PORT = 10003; // Cố định
+    private static final int PREVIEW_PORT = 5555; // Cố định
     
     private final PeerInfo localPeer;
     private final SecurityManager securityManager;

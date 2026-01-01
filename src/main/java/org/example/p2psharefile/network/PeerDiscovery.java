@@ -29,7 +29,7 @@ import java.util.concurrent.*;
  */
 public class PeerDiscovery {
 
-    private static final int DISCOVERY_PORT = 10001; // Cố định cho discovery
+    private static final int DISCOVERY_PORT = 1111; // Cố định cho discovery
     private static final int HEARTBEAT_INTERVAL = 5000; // 5 giây
     private static final int PEER_TIMEOUT = 15000; // 15 giây
     private static final int SCAN_INTERVAL = 10000; // 10 giây quét lại

@@ -266,7 +266,7 @@ public class SecurityManager {
      */
     public void addTrustedPeerKey(String peerId, PublicKey publicKey) {
         trustedPeerKeys.put(peerId, publicKey);
-        System.out.println("✓ [Bảo mật] Đã thêm peer đáng tin cậy: " + peerId);
+        // Đã thêm peer đáng tin cậy (ẩn log để tránh lặp lại nhiều lần)
     }
     
     /**

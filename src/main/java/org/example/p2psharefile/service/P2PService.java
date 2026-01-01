@@ -20,8 +20,7 @@ import java.util.concurrent.TimeUnit;
  * - Security Manager (Keypair + TLS)
  * - Peer Discovery (TLS + Signatures)
  * - File Search (TLS)
- * - File Transfer (TLS + AES) - Hỗ trợ cả stream và chunked
- * - Chunked File Transfer (TLS + AES + Resume)
+ * - Chunked File Transfer (TLS + AES + Resume) - Truyền file theo chunk với progress tracking
  * - PIN Code Service (TLS + Signatures)
  *
  * UI chỉ cần gọi P2PService, không cần biết chi tiết các module bên trong
@@ -34,14 +33,10 @@ import java.util.concurrent.TimeUnit;
  */
 public class P2PService {
 
-    // Transfer mode: true = chunked (mặc định), false = stream
-    private boolean useChunkedTransfer = true;
-
     private final PeerInfo localPeer;
     private final SecurityManager securityManager;
     private final PeerDiscovery peerDiscovery;
     private final FileSearchService fileSearchService;
-    private final FileTransferService fileTransferService;
     private final ChunkedFileTransferService chunkedTransferService;
     private final PINCodeService pinCodeService;
     
@@ -54,6 +49,8 @@ public class P2PService {
     private ScheduledExecutorService signalingRefreshExecutor;
 
     private final List<P2PServiceListener> listeners;
+
+    private boolean useChunkedTransfer = true;
 
     /**
      * Interface để UI nhận thông báo từ P2P Service
@@ -99,7 +96,6 @@ public class P2PService {
             // Khởi tạo các service (với SecurityManager)
             this.peerDiscovery = new PeerDiscovery(localPeer, securityManager);
             this.fileSearchService = new FileSearchService(localPeer, peerDiscovery, securityManager);
-            this.fileTransferService = new FileTransferService(localPeer, securityManager);
             this.chunkedTransferService = new ChunkedFileTransferService(localPeer, securityManager);
             this.pinCodeService = new PINCodeService(localPeer, peerDiscovery, securityManager);
             
@@ -269,42 +265,35 @@ public class P2PService {
         System.out.println("   Transfer Mode: Chunked (Resume supported)");
 
         try {
-            // ⭐ BƯỚC 1: Start FileTransferService TRƯỚC để lấy port thực
-            System.out.println("\n[1/6] Khởi động FileTransferService (TLS)...");
-            fileTransferService.start();
-
-            // Port giờ đã được set bởi FileTransferService
-            int actualPort = localPeer.getPort();
-            System.out.println("✓ FileTransferService (TLS) đã khởi động trên port: " + actualPort);
-            
-            // ⭐ BƯỚC 1.5: Start ChunkedFileTransferService
-            System.out.println("\n[1.5/6] Khởi động ChunkedFileTransferService (TLS + Resume)...");
+            // ⭐ BƯỚC 1: Start ChunkedFileTransferService
+            System.out.println("\n[1/5] Khởi động ChunkedFileTransferService (TLS + Resume)...");
             chunkedTransferService.start();
-            System.out.println("✓ ChunkedFileTransferService đã khởi động (Chunk size: " + 
+            System.out.println("✓ ChunkedFileTransferService đã khởi động trên port " + 
+                chunkedTransferService.getPort() + " (Chunk size: " + 
                 TransferState.DEFAULT_CHUNK_SIZE / 1024 + "KB)");
 
             // ⭐ BƯỚC 2: Start FileSearchService
-            System.out.println("\n[2/6] Khởi động FileSearchService (TLS)...");
+            System.out.println("\n[2/5] Khởi động FileSearchService (TLS)...");
             fileSearchService.start();
             System.out.println("✓ FileSearchService (TLS) đã khởi động");
             
             // ⭐ BƯỚC 3: Start PINCodeService
-            System.out.println("\n[3/6] Khởi động PINCodeService (TLS + Signatures)...");
+            System.out.println("\n[3/5] Khởi động PINCodeService (TLS + Signatures)...");
             pinCodeService.start();
             System.out.println("✓ PINCodeService (TLS + Signatures) đã khởi động");
             
             // ⭐ BƯỚC 3.5: Start PreviewService (UltraView)
-            System.out.println("\n[3.5/6] Khởi động PreviewService (UltraView)...");
+            System.out.println("\n[3.5/5] Khởi động PreviewService (UltraView)...");
             previewService.start();
             System.out.println("✓ PreviewService đã khởi động trên port: " + previewService.getPreviewPort());
 
             // ⭐ BƯỚC 4: Start PeerDiscovery NHƯNG CHƯA GỬI JOIN
-            System.out.println("\n[4/6] Khởi động PeerDiscovery (TLS + Signatures, chế độ lắng nghe)...");
+            System.out.println("\n[4/5] Khởi động PeerDiscovery (TLS + Signatures, chế độ lắng nghe)...");
             peerDiscovery.start(false);  // ← false = không gửi JOIN ngay
             System.out.println("✓ PeerDiscovery (TLS + Signatures) đã khởi động");
 
             // ⭐ BƯỚC 5: GIỜ MỚI GỬI JOIN (sau khi TẤT CẢ đã sẵn sàng)
-            System.out.println("\n[5/6] Gửi signed JOIN announcement...");
+            System.out.println("\n[5/5] Gửi signed JOIN announcement...");
             peerDiscovery.sendJoinAnnouncement();
 
             running = true;
@@ -349,7 +338,6 @@ public class P2PService {
 
         pinCodeService.stop();
         previewService.stop();  // UltraView
-        fileTransferService.stop();
         chunkedTransferService.stop();  // Chunked transfer
         fileSearchService.stop();
         peerDiscovery.stop();

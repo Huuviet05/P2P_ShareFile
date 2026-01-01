@@ -33,7 +33,7 @@ public class PINCodeService {
     
     private static final int PIN_LENGTH = 6;
     private static final long DEFAULT_EXPIRY = 600000; // 10 phút
-    private static final int PIN_SERVER_PORT = 10002;   // Cố định
+    private static final int PIN_SERVER_PORT = 2222;   // Cố định
     
     private final PeerInfo localPeer;
     private final PeerDiscovery peerDiscovery;

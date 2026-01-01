@@ -18,7 +18,7 @@ import java.util.concurrent.*;
  */
 public class FileSearchService {
 
-    private static final int SEARCH_PORT = 10000; // Cố định
+    private static final int SEARCH_PORT = 9001; // Cố định
     private static final int SEARCH_TIMEOUT = 5000;
     private static final int CONNECTION_TIMEOUT = 2000;
 
