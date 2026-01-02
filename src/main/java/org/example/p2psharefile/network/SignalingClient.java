@@ -29,12 +29,21 @@ import java.util.concurrent.*;
  */
 public class SignalingClient {
     
-    // Cấu hình server mặc định (có thể thay đổi)
-    private static final String DEFAULT_SERVER_HOST = "localhost";
+    // ==================== CẤU HÌNH SIGNALING SERVER ====================
+    // Để deploy lên cloud, thay đổi URL ở đây:
+    // Ví dụ Render.com: "p2p-signaling-server.onrender.com"
+    // Ví dụ Railway: "p2p-signaling.up.railway.app"
+    // Ví dụ tự host: "your-server-ip" hoặc "your-domain.com"
+    // ===================================================================
+    
+    // Server mặc định - THAY ĐỔI KHI DEPLOY LÊN CLOUD
+    private static final String DEFAULT_SERVER_HOST = "localhost";  // TODO: Thay bằng URL cloud khi deploy
     private static final int DEFAULT_SERVER_PORT = 9000;
+    
+    // Timeout settings
     private static final int HEARTBEAT_INTERVAL_MS = 30000; // 30 giây
-    private static final int CONNECTION_TIMEOUT_MS = 5000;
-    private static final int READ_TIMEOUT_MS = 10000;
+    private static final int CONNECTION_TIMEOUT_MS = 10000; // 10 giây (tăng cho Internet)
+    private static final int READ_TIMEOUT_MS = 15000; // 15 giây
     
     private final PeerInfo localPeer;
     private final SecurityManager securityManager;

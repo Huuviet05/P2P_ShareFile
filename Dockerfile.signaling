@@ -1,0 +1,41 @@
+# ============================================
+# Dockerfile cho P2P Signaling Server
+# Deploy lên Render.com, Railway, Fly.io, etc.
+# ============================================
+
+FROM maven:3.9-eclipse-temurin-21 AS builder
+
+WORKDIR /app
+
+# Copy pom.xml và download dependencies
+COPY pom.xml .
+RUN mvn dependency:resolve -q || true
+
+# Copy source code
+COPY src ./src
+
+# Build (skip JavaFX vì server không cần GUI)
+RUN mvn compile -DskipTests -q
+
+# ============================================
+# Runtime stage - Nhẹ hơn
+# ============================================
+FROM eclipse-temurin:21-jdk-alpine
+
+WORKDIR /app
+
+# Install netcat for healthcheck
+RUN apk add --no-cache netcat-openbsd
+
+# Copy từ builder
+COPY --from=builder /app/target/classes ./classes
+COPY --from=builder /root/.m2/repository/org/bouncycastle ./libs/bouncycastle
+
+# Port (Render.com sẽ dùng biến PORT)
+ENV PORT=9000
+EXPOSE 9000
+
+# Run Signaling Server
+CMD java -cp "classes:libs/bouncycastle/bcprov-jdk18on/1.78.1/bcprov-jdk18on-1.78.1.jar:libs/bouncycastle/bcpkix-jdk18on/1.78.1/bcpkix-jdk18on-1.78.1.jar" \
+    -Xmx256m \
+    org.example.p2psharefile.signaling.StandaloneSignalingServer $PORT

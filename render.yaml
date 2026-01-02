@@ -1,0 +1,30 @@
+# ============================================
+# Render.com Configuration
+# Deploy P2P Signaling Server
+# ============================================
+
+services:
+   # Signaling Server - Chỉ điều phối kết nối, không lưu file
+   - type: web
+     name: p2p-signaling-server
+     runtime: docker
+     dockerfilePath: ./Dockerfile.signaling
+
+     # Plan miễn phí
+     plan: free
+
+     # Region gần Việt Nam
+     region: singapore
+
+     # Health check
+     healthCheckPath: /
+
+     # Environment variables
+     envVars:
+        - key: PORT
+          value: 9000
+        - key: JAVA_OPTS
+          value: -Xmx256m -Xms128m
+
+     # Auto deploy khi push code
+     autoDeploy: true

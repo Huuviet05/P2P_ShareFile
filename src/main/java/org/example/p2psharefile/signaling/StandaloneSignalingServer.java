@@ -53,15 +53,27 @@ public class StandaloneSignalingServer {
                 System.out.println("👋 Tạm biệt!");
             }));
             
+            // Lấy IP thực tế của máy
+            String localIP = getLocalIPAddress();
+            
             System.out.println();
-            System.out.println("📌 Thông tin kết nối:");
-            System.out.println("   - Host: <your-ip>:" + port);
-            System.out.println("   - Protocol: TLS (bảo mật)");
+            System.out.println("╔══════════════════════════════════════════════════════════╗");
+            System.out.println("║                    📌 THÔNG TIN KẾT NỐI                  ║");
+            System.out.println("╠══════════════════════════════════════════════════════════╣");
+            System.out.println("║  IP Server: " + padRight(localIP, 43) + "║");
+            System.out.println("║  Port: " + padRight(String.valueOf(port), 48) + "║");
+            System.out.println("║  Địa chỉ đầy đủ: " + padRight(localIP + ":" + port, 38) + "║");
+            System.out.println("╠══════════════════════════════════════════════════════════╣");
+            System.out.println("║  🔒 Protocol: TLS (bảo mật end-to-end)                   ║");
+            System.out.println("╚══════════════════════════════════════════════════════════╝");
             System.out.println();
-            System.out.println("📋 Để kết nối từ client:");
-            System.out.println("   p2pService.setSignalingServerAddress(\"<your-ip>\", " + port + ");");
+            System.out.println("📋 HƯỚNG DẪN KẾT NỐI TỪ CÁC PEERS:");
+            System.out.println("   1. Chạy MainApplication trên các máy khác");
+            System.out.println("   2. Click nút 'Internet' trên giao diện");
+            System.out.println("   3. Nhập: Host = " + localIP + ", Port = " + port);
             System.out.println();
             System.out.println("⌨  Nhấn Ctrl+C để dừng server...");
+            System.out.println();
             System.out.println();
             
             // Giữ server chạy
@@ -81,5 +93,46 @@ public class StandaloneSignalingServer {
             e.printStackTrace();
             System.exit(1);
         }
+    }
+    
+    /**
+     * Lấy địa chỉ IP local (ưu tiên IPv4 không phải loopback)
+     */
+    private static String getLocalIPAddress() {
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> interfaces = 
+                java.net.NetworkInterface.getNetworkInterfaces();
+            
+            while (interfaces.hasMoreElements()) {
+                java.net.NetworkInterface networkInterface = interfaces.nextElement();
+                
+                // Bỏ qua interface ảo và loopback
+                if (networkInterface.isLoopback() || !networkInterface.isUp()) continue;
+                String name = networkInterface.getDisplayName().toLowerCase();
+                if (name.contains("virtual") || name.contains("vmware") || 
+                    name.contains("vbox") || name.contains("docker")) continue;
+                
+                java.util.Enumeration<java.net.InetAddress> addresses = 
+                    networkInterface.getInetAddresses();
+                
+                while (addresses.hasMoreElements()) {
+                    java.net.InetAddress addr = addresses.nextElement();
+                    // Chỉ lấy IPv4
+                    if (addr instanceof java.net.Inet4Address && !addr.isLoopbackAddress()) {
+                        return addr.getHostAddress();
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // Fallback
+        }
+        return "localhost";
+    }
+    
+    /**
+     * Padding string để căn lề
+     */
+    private static String padRight(String s, int n) {
+        return String.format("%-" + n + "s", s);
     }
 }
